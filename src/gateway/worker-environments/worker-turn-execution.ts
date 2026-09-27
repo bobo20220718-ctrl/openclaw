@@ -326,6 +326,7 @@ export async function executeWorkerTurn(
     }
     githubGrant = await prepareWorkerGitHubBindingGrant({
       operatorAuthority,
+      requireOperatorAuthority: true,
       sessionId: placement.sessionId,
       sessionKey: placement.sessionKey,
       agentId: placement.agentId,

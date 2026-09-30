@@ -26,7 +26,6 @@ import {
 } from "../../infra/active-node-context.js";
 import { registerAgentRunDelegatedAuthorityClosedHandler } from "../../infra/agent-run-registry.js";
 import { logInfo } from "../../logger.js";
-import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
 import { prepareSkillResourceDelivery } from "../../skills/runtime/resources.js";
 import { parseWorkerLaunchPlan } from "../../worker/launch-descriptor.js";
@@ -61,6 +60,7 @@ import {
   emitProviderReplayRejected,
   fitLaunchDescriptorWithRuntimeIdentity,
   parseWorkerTurnProcessResult,
+  readWorkerTurnTerminalResult,
   prepareWorkerAgentRuntimeIdentity,
   windowInitialMessages,
 } from "./worker-turn-payload.js";
@@ -76,8 +76,6 @@ import {
   recoverWorkspaceBeforeTurn,
   workerWorkspaceFailure,
 } from "./workspace-result-finalize.js";
-
-const log = createSubsystemLogger("gateway/worker-turn");
 
 export async function executeWorkerTurn(
   params: Omit<Parameters<typeof executeRemoteExecTurn>[0], "environments" | "runLocal"> & {
@@ -275,9 +273,11 @@ export async function executeWorkerTurn(
   assertActive();
   const authority = runtimeIdentity.approvalAuthority;
   const authorityAbort = new AbortController();
-  const signal = turn.abortSignal
-    ? AbortSignal.any([turn.abortSignal, authorityAbort.signal])
-    : authorityAbort.signal;
+  const signal = AbortSignal.any(
+    [turn.abortSignal, operatorAuthority?.signal, authorityAbort.signal].filter(
+      (source): source is AbortSignal => source !== undefined,
+    ),
+  );
   const cancel = () => authorityAbort.abort(new Error("Worker turn authority closed"));
   // Keep exact closure wired through transfer and launch dispatch, including awaited
   // node readiness. The workspace/tunnel lifetime alone outlives this admitted turn.
@@ -326,12 +326,17 @@ export async function executeWorkerTurn(
     }
     githubGrant = await prepareWorkerGitHubBindingGrant({
       operatorAuthority,
+      signal,
       requireOperatorAuthority: true,
       sessionId: placement.sessionId,
       sessionKey: placement.sessionKey,
       agentId: placement.agentId,
       assertCurrent: isAuthorized,
     });
+    if (signal.aborted) {
+      await githubGrant?.revoke();
+      signal.throwIfAborted();
+    }
     const github = githubGrant?.binding;
     const skillWorkshop = turn.skillLibraryAuthoring
       ? createLibrarySkillWorkshopTool({ ...turn.skillLibraryAuthoring, defaultTarget: "personal" })
@@ -623,7 +628,11 @@ export async function executeWorkerTurn(
         turnClaim: params.turnClaim,
         timeoutMs: turn.timeoutMs,
         credentialExpiresAtMs: credential.expiresAtMs,
-        signal: AbortSignal.any([signal, handoffAbort.signal]),
+        signal: AbortSignal.any(
+          [signal, handoffAbort.signal, githubGrant?.signal].filter(
+            (source): source is AbortSignal => source !== undefined,
+          ),
+        ),
         onDispatchReady,
       });
     } finally {
@@ -641,46 +650,19 @@ export async function executeWorkerTurn(
       throw new Error("Cloud worker launch completed before transport dispatch");
     }
     const runtimeResult = parseWorkerTurnProcessResult(processResult);
-    const workerTurnFailed = runtimeResult.status === "failed";
-
-    // A terminal result settles under its pending-result owner, even after execution ends.
-    const completed = await SessionManager.openAsync(transcriptTarget);
-    if (!params.placements.validateWorkspaceResultClaim(params.turnClaim)) {
-      throw new Error("Cloud worker result lost its placement owner during transcript hydration");
-    }
-    resolveWorkerTurnTranscriptTarget({ ...transcriptTarget, sessionTarget: transcriptTarget });
-    const currentPlacement = params.placements.get(placement.sessionId);
-    if (
-      runtimeResult.transcriptLeafId !== completed.getLeafId() ||
-      runtimeResult.transcriptNextSeq !== (currentPlacement?.lastTranscriptAckCursor ?? 0) + 1
-    ) {
-      throw new Error(
-        `Cloud worker result does not match its committed transcript acknowledgement ` +
-          `(leaf=${runtimeResult.transcriptLeafId ?? "none"}/${completed.getLeafId() ?? "none"}, ` +
-          `nextSeq=${runtimeResult.transcriptNextSeq}/${(currentPlacement?.lastTranscriptAckCursor ?? 0) + 1})`,
-      );
-    }
-    const terminal = runtimeResult.transcriptLeafId
-      ? completed.getEntry(runtimeResult.transcriptLeafId)
-      : undefined;
-    if (!terminal || terminal.type !== "message" || terminal.message.role !== "assistant") {
-      throw new Error("Cloud worker completed without a terminal assistant transcript message");
-    }
-    const text = collectTextContentBlocks(terminal.message.content).join("");
-    const baseIndex = completed.getBranch().findIndex((entry) => entry.id === baseLeafId);
-    const workerMessages = completed
-      .getBranch()
-      .slice(baseIndex + 1)
-      .flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
-    // Consume and mark before reconciliation releases the exact finishing-ACK owner.
-    const finishing = workerTurnFailed ? takeFinishingOutcome(credential.deliveryId) : undefined;
-    const workerFailure = workerTurnFailed
-      ? new WorkerTurnExecutionError(finishing?.error ?? "Cloud worker turn failed")
-      : undefined;
-    if (workerFailure && finishing?.replayInvalid) {
-      recordModelFallbackStop(workerFailure);
-    }
+    const { terminal, text, workerMessages, workerFailure } = await readWorkerTurnTerminalResult({
+      transcriptTarget,
+      placements: params.placements,
+      turnClaim: params.turnClaim,
+      runtimeResult,
+      baseLeafId,
+      takeFinishingOutcome,
+      deliveryId: credential.deliveryId,
+    });
     const reply = workerFailure ? { text } : await prepareReplyMedia({ text });
+    // A terminal turn no longer owns GitHub reach. Revoke before reconciliation
+    // can resume commands retained by the worker workspace.
+    await githubGrant?.revoke();
     const workspaceConflict = await reconcileWorkspaceAfterTurn({
       ...params,
       transcriptTarget,
@@ -712,20 +694,16 @@ export async function executeWorkerTurn(
     return buildWorkerTurnResult({
       messages: workerMessages,
       modelRef,
-      terminal: terminal.message,
+      terminal,
       durationMs: Date.now() - startedAt,
       sessionId: placement.sessionId,
       sessionFile: turn.sessionFile,
       reply,
     });
   } finally {
+    await githubGrant?.revoke();
     await toolRuntime?.close();
     stopWatchingClaim();
     stopWatchingRun();
-    try {
-      await githubGrant?.revoke();
-    } catch {
-      log.warn("Worker GitHub token revocation failed; the installation token will expire.");
-    }
   }
 }

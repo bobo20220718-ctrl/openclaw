@@ -624,6 +624,7 @@ export async function executeWorkerTurn(
     };
     let processResult: Awaited<ReturnType<NonNullable<typeof tunnel.launchTurn>>>;
     try {
+      githubGrant?.assertCurrent?.();
       processResult = await tunnel.launchTurn({
         plan: launchPlan.plan,
         turnClaim: params.turnClaim,
@@ -661,7 +662,7 @@ export async function executeWorkerTurn(
       deliveryId: credential.deliveryId,
     });
     const reply = workerFailure ? { text } : await prepareReplyMedia({ text });
-    // Close GitHub reach before reconciliation resumes retained commands.
+    // Stop profile delivery before reconciliation resumes retained commands.
     await revokeWorkerGitHubBindingGrant(githubGrant);
     const workspaceConflict = await reconcileWorkspaceAfterTurn({
       ...params,

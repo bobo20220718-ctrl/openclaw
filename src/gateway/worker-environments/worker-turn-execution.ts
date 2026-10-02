@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { SKILL_RESOURCE_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/skill-resources.js";
+import { WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import { WORKER_GATEWAY_TOOLS_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-gateway-tool.js";
 import { readRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { resolveAgentDir } from "../../agents/agent-scope.js";
@@ -15,6 +16,7 @@ import {
   loadManifestModelCatalog,
   overlayConfiguredModelCatalog,
 } from "../../agents/model-catalog.js";
+import { createModelVisibilityPolicy } from "../../agents/model-visibility-policy.js";
 import { acquireAgentRunPreparedModelRuntime } from "../../agents/prepared-model-runtime.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { createLibrarySkillWorkshopTool } from "../../agents/tools/skill-workshop-tool-library.js";
@@ -33,6 +35,7 @@ import { WORKER_PROVIDER_REPLAY_LOCAL_RETRY_MESSAGE } from "../../worker/transcr
 import { createWorkerPlacementTools } from "../../worker/worker-placement-tools.js";
 import { prepareGitHubPublicationAvailability } from "../github-publication-availability.js";
 import { requireCurrentWorkerTurnEnvironment, StaleWorkerBuildError } from "./admission.js";
+import { workerInferencePlacement } from "./inference-placement.js";
 import { raceNodeWorkerOperation } from "./node-worker-abort.js";
 import { sameWorkerSessionTurnClaim } from "./placement-record.js";
 import {
@@ -102,6 +105,24 @@ export async function executeWorkerTurn(
     environments: params.environments,
     placement,
   });
+  const inferencePlacement = workerInferencePlacement(environment);
+  if (inferencePlacement === "worker") {
+    const policy = createModelVisibilityPolicy({
+      cfg: turn.config ?? {},
+      catalog: [],
+      defaultProvider: modelRef.provider,
+      agentId: placement.agentId,
+    });
+    if (!policy.allows(modelRef)) {
+      throw new Error("Model is not approved for this worker agent");
+    }
+    if (
+      !environment.nodeDeviceId ||
+      !bootstrapReceipt.protocolFeatures.includes(WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE)
+    ) {
+      throw new Error("Worker inference requires a matching capable paired-node worker build");
+    }
+  }
   await recoverWorkspaceBeforeTurn({ ...params, signal: turn.abortSignal });
   params.assertRunCurrent?.();
   turn.abortSignal?.throwIfAborted();
@@ -534,6 +555,7 @@ export async function executeWorkerTurn(
                 }
               : {}),
             modelRef,
+            ...(inferencePlacement === "worker" ? { inference: "runtime-local" } : {}),
             inferenceOptions: reasoning ? { reasoning } : {},
             systemPrompt,
             initialMessages: windowedMessages,

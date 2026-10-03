@@ -39,7 +39,6 @@ import {
   resolveCronJobMessageToolAuthorityInputs,
 } from "./jobs-tool-policy.js";
 import type { CronServiceState } from "./state.js";
-import { runsDetachedFromMainSession } from "./timer-execution-timeout.js";
 
 function resolveCronRunReceiptAgentId(state: CronServiceState, job: CronAgentScope): string {
   return resolveCronJobEffectiveAgentId(
@@ -98,7 +97,6 @@ export function markServiceCronJobActive(
     agentId: runReceipt.agentId,
     stateIdentityKey: captureOpenClawStateWorkerContext().admission.identity.key,
     declarationKey: job.declarationKey,
-    preserveAcrossGenerationAdvance: !runsDetachedFromMainSession(job),
     isMessageActionAuthorityCurrent: createServiceCronRunMessageAuthorityChecker({
       state,
       job,
@@ -229,7 +227,7 @@ export async function assertServiceCronRunReceiptCurrent(
   );
   context.admission.assertCurrent();
   signal?.throwIfAborted();
-  // Main-session runs can retain a removal request without a bound abort controller.
+  // Removal can be requested after admission but before the abort controller binds.
   if (activeJobMarker?.cancellation?.kind === "requested") {
     throw new CronRunReceiptRevisionError(handle.receiptId, activeJobMarker.cancellation.reason);
   }

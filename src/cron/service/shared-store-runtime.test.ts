@@ -51,7 +51,7 @@ function createDisabledService(storePath: string): CronService {
     storePath,
     log,
     enqueueSystemEvent() {},
-    requestHeartbeat() {},
+    enqueueSessionEvent() {},
     async runIsolatedAgentJob() {
       return { status: "ok" as const, summary: "unused" };
     },
@@ -98,7 +98,7 @@ for (const run of runs) {
     nowMs: () => run.startedAtMs ?? Date.now(),
     log,
     enqueueSystemEvent() {},
-    requestHeartbeat() {},
+    enqueueSessionEvent() {},
     async runIsolatedAgentJob() {
       if (run.leavePending) {
         openOpenClawStateDatabase().db.exec(
@@ -179,7 +179,7 @@ const cron = new CronService({
   nowMs: () => nowMs,
   log: { debug() {}, info() {}, warn() {}, error() {} },
   enqueueSystemEvent() {},
-  requestHeartbeat() {},
+  enqueueSessionEvent() {},
   async runIsolatedAgentJob() {
     const index = payloads++;
     assert.ok(index < 2, "startup must not replay either payload");
@@ -423,7 +423,7 @@ describe("scheduler-disabled shared-store mutations", () => {
       nowMs: () => nowMs,
       log,
       enqueueSystemEvent() {},
-      requestHeartbeat() {},
+      enqueueSessionEvent() {},
       runIsolatedAgentJob,
     };
     const editor = new CronService({
@@ -553,7 +553,7 @@ describe("scheduler-disabled shared-store mutations", () => {
       storePath,
       log,
       enqueueSystemEvent() {},
-      requestHeartbeat() {},
+      enqueueSessionEvent() {},
       async runIsolatedAgentJob() {
         return { status: "ok" as const, summary: "unused" };
       },

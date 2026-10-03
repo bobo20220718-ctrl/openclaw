@@ -18,7 +18,7 @@ import { resolveSpawnedWorkspaceInheritance } from "../../../agents/spawned-cont
 import {
   resolveAcpSpawnRuntimePolicyError,
   resolveRuntimeCwdForAcpSpawn,
-} from "../../../agents/subagents/spawn/acp-spawn.js";
+} from "../../../agents/subagents/spawn/acp-spawn-runtime.js";
 import {
   readChannelContextAdmissionEvidence,
   type ChannelAdmissionEvidence,

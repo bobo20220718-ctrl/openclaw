@@ -8,7 +8,7 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { buildAgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
 import { registerAgentSessionLoopTestLifecycle } from "../../agents/sessions/agent-session-loop-correctness.test-support.js";
-import type { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
+import type { dispatchInboundMessageInternal } from "../../auto-reply/dispatch.js";
 import { replyRunRegistry } from "../../auto-reply/reply/reply-run-registry.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import * as sessionAccessor from "../../config/sessions/session-accessor.js";
@@ -790,7 +790,7 @@ describe("ordinary chat input admission", () => {
         fixture.context.dedupe.clear();
         await patchSessionEntryCore(fixture.scope, () => ({ status: "done" }));
         dispatchInboundMessageMock.mockImplementation(async (options: unknown) => {
-          const { replyOptions } = options as Parameters<typeof dispatchInboundMessage>[0];
+          const { replyOptions } = options as Parameters<typeof dispatchInboundMessageInternal>[0];
           if (replyOptions?.userTurnTranscriptRecorder) {
             resumedRecorder = replyOptions.userTurnTranscriptRecorder;
           }
@@ -873,7 +873,7 @@ describe("ordinary chat input admission", () => {
     "keeps committed history delivery with the %s source owner",
     async (route) => {
       const fixture = await createBrowserFollowupFixture({ active: false });
-      const entered = createDeferred<Parameters<typeof dispatchInboundMessage>[0]>();
+      const entered = createDeferred<Parameters<typeof dispatchInboundMessageInternal>[0]>();
       const release = createDeferred();
       let settleQueued: (() => void) | undefined;
       if (route === "external") {
@@ -882,7 +882,7 @@ describe("ordinary chat input admission", () => {
         fixture.params.deliver = true;
       }
       dispatchInboundMessageMock.mockImplementation(async (dispatchParams: unknown) => {
-        const options = dispatchParams as Parameters<typeof dispatchInboundMessage>[0];
+        const options = dispatchParams as Parameters<typeof dispatchInboundMessageInternal>[0];
         if (route === "queued-webchat") {
           // The queue retains cancellation/admission after the initial dispatch unwinds.
           options.replyOptions?.turnAdoptionLifecycle?.onDeferred?.();

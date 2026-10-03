@@ -1,4 +1,3 @@
-import type { HeartbeatOutcomeWorkerOperations } from "../../infra/heartbeat-outcome-store.worker.js";
 import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js";
 import type { readSessionProgressCard } from "../../session-cards/progress-card-store.js";
 import type { SessionParticipantRecord } from "./session-accessor.sqlite-participant-projection.js";
@@ -41,8 +40,6 @@ export type IncognitoSideDataOperations = {
     input: { sessionKey: string; params: SetSessionReactionParams };
     output: SessionReactionWrite;
   };
-  "session.heartbeat.persist": HeartbeatOutcomeWorkerOperations["persist"];
-  "session.heartbeat.claim": HeartbeatOutcomeWorkerOperations["claim"];
   "session.progressCard.get": {
     input: { sessionKey: string };
     output: ReturnType<typeof readSessionProgressCard>;
@@ -53,17 +50,13 @@ export function isIncognitoSideDataWrite(type: keyof IncognitoSideDataOperations
   return (
     type === "session.category.apply" ||
     type === "session.reaction.set" ||
-    type.startsWith("session.sharing.") ||
-    type.startsWith("session.heartbeat.")
+    type.startsWith("session.sharing.")
   );
 }
 
 export function incognitoSideDataKeys(
   command: SqliteWorkerCommand<IncognitoSideDataOperations>,
 ): string[] {
-  if (command.type === "session.heartbeat.persist") {
-    return [command.input.session_key];
-  }
   if (command.type === "session.catalog.read") {
     return command.input.sessionKeys ?? [];
   }

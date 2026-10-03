@@ -76,12 +76,9 @@ export function createShouldEmitVerboseProgress(params: {
 }
 
 export function resolveTurnModelOverride(
-  replyOptions: { isHeartbeat?: boolean; heartbeatModelOverride?: string } | undefined,
+  replyOptions: { modelOverride?: string } | undefined,
 ): string | undefined {
-  if (replyOptions?.isHeartbeat !== true) {
-    return undefined;
-  }
-  return normalizeOptionalString(replyOptions.heartbeatModelOverride);
+  return normalizeOptionalString(replyOptions?.modelOverride);
 }
 
 /**

@@ -64,7 +64,7 @@ it("records the exact acknowledged manual run after SIGKILL before command-lane 
             cronEnabled: true,
             defaultAgentId: "main",
             log: { info() {}, warn() {}, error() {}, debug() {} },
-            enqueueSystemEvent() {}, requestHeartbeat() {},
+            enqueueSystemEvent() {},
             runIsolatedAgentJob: async () => { throw new Error("unexpected execution"); },
             runCommandJob: async () => { throw new Error("unexpected execution"); },
           });
@@ -128,7 +128,7 @@ it.each(["cleared", "write-failed"] as const)(
       cronEnabled: false,
       log: createNoopLogger(),
       enqueueSystemEvent() {},
-      requestHeartbeat() {},
+      enqueueSessionEvent() {},
       runIsolatedAgentJob,
       onEvent: (event) => {
         if (event.action === "finished") {

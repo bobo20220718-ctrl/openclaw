@@ -329,7 +329,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { [sessionKey]: sessionEntry },
       sessionKey,
       storePath: path.join(rootDir, "sessions.json"),
-      isHeartbeat: false,
       replyOperation: createReplyOperation(),
       ...overrides,
     });
@@ -349,7 +348,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: sessionEntry ? { [sessionKey]: sessionEntry } : undefined,
       sessionKey,
       storePath: path.join(rootDir, "sessions.json"),
-      isHeartbeat: false,
       ...createCompactionLifecycle(createReplyOperation()),
       ...overrides,
     });
@@ -1894,7 +1892,7 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
   });
 
-  it("enforces the active transcript byte threshold during heartbeats", async () => {
+  it("enforces the active transcript byte threshold during preflight", async () => {
     await writeTranscript([
       { type: "message", message: { role: "user", content: "x".repeat(256) } },
     ]);
@@ -1909,7 +1907,6 @@ describe("runMemoryFlushIfNeeded", () => {
       }),
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      isHeartbeat: true,
     });
 
     expect(requireCompactEmbeddedAgentSessionCall()).toMatchObject({
@@ -2127,7 +2124,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore,
       sessionKey,
       storePath,
-      isHeartbeat: true,
     });
     try {
       await Promise.race([
@@ -2174,7 +2170,6 @@ describe("runMemoryFlushIfNeeded", () => {
       await runCodexBytePreflight(entry, {
         sessionKey,
         storePath: fixture.storePath,
-        isHeartbeat: true,
       });
     const initialBytes = readActiveTranscriptStats(scope).sizeBytes;
     let settledBytes = 0;
@@ -2253,7 +2248,6 @@ describe("runMemoryFlushIfNeeded", () => {
       followupRun: createTestFollowupRun({ sessionId: "session", sessionKey }),
       sessionKey,
       storePath,
-      isHeartbeat: true,
     });
 
     expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
@@ -2295,7 +2289,6 @@ describe("runMemoryFlushIfNeeded", () => {
       followupRun: createTestFollowupRun({ sessionId: "session", sessionKey }),
       sessionKey,
       storePath,
-      isHeartbeat: true,
     });
 
     expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledOnce();

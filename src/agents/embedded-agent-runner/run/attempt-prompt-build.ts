@@ -8,10 +8,6 @@ import {
   type DiagnosticTraceContext,
   freezeDiagnosticTraceContext,
 } from "../../../infra/diagnostic-trace-context.js";
-import {
-  resolveHeartbeatSummaryForAgent,
-  type HeartbeatSummary,
-} from "../../../infra/heartbeat-summary.js";
 import type { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
 import { buildInterSessionPromptContext } from "../../../sessions/input-provenance.js";
 import { joinPresentTextSegments } from "../../../shared/text/join-segments.js";
@@ -392,10 +388,6 @@ export async function prepareEmbeddedAttemptPromptAssembly(input: {
   const transcriptLeafId = currentUserAdmission
     ? currentUserAdmission.effectiveParentId
     : input.sessionManager.getLeafId();
-  const heartbeatSummary =
-    !isSettledTurnFinalization && attempt.config && input.sessionAgentId
-      ? resolveHeartbeatSummaryForAgent(attempt.config, input.sessionAgentId)
-      : undefined;
 
   return {
     decisionPrefilter,
@@ -407,7 +399,6 @@ export async function prepareEmbeddedAttemptPromptAssembly(input: {
     effectiveTranscriptPrompt,
     originContext,
     transcriptLeafId,
-    heartbeatSummary,
     leasedSteering,
   };
 }
@@ -430,7 +421,6 @@ type PromptAssemblyContext = {
   effectivePrompt: string;
   effectiveTranscriptPrompt: string;
   originContext?: ReturnType<typeof buildInterSessionPromptContext>;
-  heartbeatSummary?: Pick<HeartbeatSummary, "ackMaxChars" | "prompt">;
 };
 
 export async function prepareEmbeddedAttemptPromptContext(input: {
@@ -455,11 +445,7 @@ export async function prepareEmbeddedAttemptPromptContext(input: {
   const preparedUserTurnTimestamp = (
     input.preparedUserTurnMessage as { timestamp?: unknown } | undefined
   )?.timestamp;
-  const heartbeatFiltered = filterHeartbeatTranscriptArtifacts(
-    input.messages,
-    input.prompt.heartbeatSummary?.ackMaxChars,
-    input.prompt.heartbeatSummary?.prompt,
-  );
+  const heartbeatFiltered = filterHeartbeatTranscriptArtifacts(input.messages);
   let sessionMessages = normalizeAssistantReplayContent(heartbeatFiltered);
   if (sessionMessages !== heartbeatFiltered || sessionMessages.length < input.messages.length) {
     input.replaceSessionMessages(sessionMessages);

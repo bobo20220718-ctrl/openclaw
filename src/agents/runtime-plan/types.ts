@@ -33,7 +33,14 @@ type AgentRuntimeThinkLevel =
 /** System prompt rendering mode selected for one attempt. */
 type AgentRuntimePromptMode = "full" | "minimal" | "none";
 /** Trigger source that can alter provider system prompt contributions. */
-type AgentRuntimePromptTrigger = "cron" | "heartbeat" | "manual" | "memory" | "overflow" | "user";
+type AgentRuntimePromptTrigger =
+  | "cron"
+  | "event"
+  | "heartbeat"
+  | "manual"
+  | "memory"
+  | "overflow"
+  | "user";
 
 /** Provider model descriptor consumed by runtime-plan hooks. */
 type AgentRuntimeModel = {

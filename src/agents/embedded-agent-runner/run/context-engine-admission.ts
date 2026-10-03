@@ -1,4 +1,3 @@
-import { isHeartbeatLifecycleRunKind } from "../../bootstrap-mode.js";
 import {
   createContextEngineLogicalTurnLease,
   selectContextEngineForTranscriptHost,
@@ -40,7 +39,6 @@ export async function admitEmbeddedContextEngine(
   });
   await drainPendingContextEngineTurnsBeforeRun({
     admission: params.userTurnTranscriptRecorder?.getAdmissionReceipt(),
-    isHeartbeat: isHeartbeatLifecycleRunKind(params.bootstrapContextRunKind),
     lease: contextEngineLogicalTurnLease,
     recorder: params.userTurnTranscriptRecorder,
     sessionTarget: params.sessionTarget,

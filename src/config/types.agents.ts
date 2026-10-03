@@ -20,6 +20,8 @@ export type AgentConfig = Omit<
   z.input<typeof AgentEntrySchema>,
   "memory" | "tts" | "sandbox" | "tools"
 > & {
+  /** @deprecated Doctor input only; per-agent checks are ordinary automation jobs. */
+  heartbeat?: Omit<NonNullable<AgentDefaultsConfig["heartbeat"]>, "agentId">;
   /**
    * @deprecated Legacy raw config accepted only by doctor/migration repair.
    * Normal schema parsing rejects this key; use per-model agentRuntime instead.

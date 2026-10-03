@@ -7,7 +7,6 @@ import { patchSessionEntryCore } from "../../../config/sessions/session-accessor
 import { readSessionEntrySummariesInWorker } from "../../../config/sessions/session-entry-read-runtime.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import type { AssembleResult } from "../../../context-engine/types.js";
-import { resolveHeartbeatSummaryForAgent } from "../../../infra/heartbeat-summary.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import { assembleHarnessContextEngine } from "../../harness/context-engine-lifecycle.js";
 import type { AgentMessage } from "../../runtime/index.js";
@@ -135,15 +134,7 @@ export async function prepareEmbeddedAttemptHistory(
       if (isSettledTurnFinalization) {
         return validated;
       }
-      const heartbeatSummary =
-        attempt.config && sessionAgentId
-          ? resolveHeartbeatSummaryForAgent(attempt.config, sessionAgentId)
-          : undefined;
-      const heartbeatFiltered = filterHeartbeatTranscriptArtifacts(
-        validated,
-        heartbeatSummary?.ackMaxChars,
-        heartbeatSummary?.prompt,
-      );
+      const heartbeatFiltered = filterHeartbeatTranscriptArtifacts(validated);
       const truncated = preserveCompactionReplayWindow(
         heartbeatFiltered,
         limitHistoryTurns(

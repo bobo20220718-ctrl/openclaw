@@ -400,7 +400,7 @@ export interface ContextEngine {
     sessionId: string;
     sessionKey?: string;
     message: AgentMessage;
-    /** True when the message belongs to a heartbeat run. */
+    /** @deprecated Historical SDK input only; current hosts do not emit heartbeat turns. */
     isHeartbeat?: boolean;
   }): Promise<IngestResult>;
 
@@ -411,7 +411,7 @@ export interface ContextEngine {
     sessionId: string;
     sessionKey?: string;
     messages: AgentMessage[];
-    /** True when the batch belongs to a heartbeat run. */
+    /** @deprecated Historical SDK input only; current hosts do not emit heartbeat turns. */
     isHeartbeat?: boolean;
   }): Promise<IngestBatchResult>;
 
@@ -431,7 +431,7 @@ export interface ContextEngine {
     prePromptMessageCount: number;
     /** Optional auto-compaction summary emitted by the runtime. */
     autoCompactionSummary?: string;
-    /** True when this turn belongs to a heartbeat run. */
+    /** @deprecated Historical SDK input only; current hosts do not emit heartbeat turns. */
     isHeartbeat?: boolean;
     /** Optional model context token budget for proactive compaction. */
     tokenBudget?: number;
@@ -455,6 +455,7 @@ export interface ContextEngine {
     sessionTarget?: ContextEngineSessionTarget;
     runtimeSettings?: ContextEngineRuntimeSettings;
     runtimeContext?: ContextEngineRuntimeContext;
+    /** @deprecated Historical SDK input only; current hosts do not emit heartbeat turns. */
     isHeartbeat?: boolean;
   }): Promise<{ status: "committed" | "duplicate" }>;
 

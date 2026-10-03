@@ -23,6 +23,7 @@ import {
   type AgentDeletionJournalEntry,
 } from "../state/agent-deletion-journal.js";
 import { readAgentDeletionJournalAuthorityInWorker } from "../state/agent-deletion-journal.read.js";
+import type { AgentDeletionWorkerWriteAuthority } from "../state/agent-deletion-journal.types.js";
 import { readAgentProvenance, type AgentProvenance } from "../state/agent-provenance.js";
 import { assertNoOpenClawAgentDatabaseLeases } from "../state/openclaw-agent-db-lease.js";
 import { requireOpenClawStateDatabaseIdentity } from "../state/openclaw-state-db-cache.js";
@@ -32,6 +33,7 @@ import type {
 } from "../state/openclaw-state-db-contract.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { readOpenClawStateLease } from "../state/openclaw-state-lease-store.js";
 import { withOpenClawStateLease } from "../state/openclaw-state-lease.js";
 import { captureOpenClawStateReadWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { resolveAgentConfig } from "./agent-scope-config.js";
@@ -67,6 +69,7 @@ export type AgentDeletionOperation = {
   entry: AgentDeletionJournalEntry;
   assertCurrent: (database?: OpenClawStateDatabase) => void;
   assertCurrentAsync: () => Promise<void>;
+  captureWorkerWriteAuthority: () => AgentDeletionWorkerWriteAuthority;
   runDatabaseCleanup: ReturnType<typeof createAgentDeletionDatabaseCleanup>;
   fenceDatabasePaths: (paths: readonly string[]) => void;
   fenceCleanupPaths: (paths: readonly AgentDeletionJournalCleanupPath[]) => void;
@@ -89,10 +92,10 @@ export function withAgentDeletion<T>(
     options.path ?? resolveOpenClawStateSqlitePath(options.env ?? process.env),
   );
   const stateOptions = { ...options, path: statePath, env: { ...(options.env ?? process.env) } };
+  const leaseKey = { scope: "core:agent-deletion", key: id };
   return withOpenClawStateLease(
     {
-      scope: "core:agent-deletion",
-      key: id,
+      ...leaseKey,
       database: { scope: "shared", options: stateOptions },
       leaseMs: 60_000,
       waitMs: 5_000,
@@ -111,8 +114,12 @@ export function withAgentDeletion<T>(
           }
           begun = true;
           const operationId = crypto.randomUUID();
-          const journal = runOpenClawStateWriteTransaction((database) => {
+          const { journal, leaseIdentity } = runOpenClawStateWriteTransaction((database) => {
             lease.assertOwnedInTransaction(database.db);
+            const ownedLease = readOpenClawStateLease(database.db, leaseKey);
+            if (!ownedLease) {
+              throw new Error(`Agent ${id} deletion lost its lease during journal admission.`);
+            }
             const cancelCronRuns = captureActiveCronJobAgentDeletion(
               id,
               requireOpenClawStateDatabaseIdentity(database).key,
@@ -131,7 +138,10 @@ export function withAgentDeletion<T>(
             ) {
               throw new Error("Agent deletion requires a managed transaction");
             }
-            return entryJournal;
+            return {
+              journal: entryJournal,
+              leaseIdentity: { ...leaseKey, owner: ownedLease.owner },
+            };
           }, stateOptions);
           const readContext = captureOpenClawStateReadWorkerContext(stateOptions);
           const assertJournalIdentity = (
@@ -231,6 +241,18 @@ export function withAgentDeletion<T>(
                 throw new Error(`Failed to hand off deletion journal for agent ${id}.`);
               }
               // Journal replacement revokes this attempt; rollback must leave its local authority usable.
+            },
+            captureWorkerWriteAuthority: () => {
+              assertCurrent();
+              return {
+                facts: {
+                  databasePath: readContext.admission.databasePath,
+                  agentId: id,
+                  operationId,
+                  lease: { ...leaseIdentity },
+                },
+                assertCurrent: assertAsyncScopeCurrent,
+              };
             },
             runDatabaseCleanup: createAgentDeletionDatabaseCleanup({
               statePath,

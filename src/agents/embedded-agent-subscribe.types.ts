@@ -6,7 +6,6 @@ import type {
   PartialReplyPayload,
   SourceReplyDeliveryMode,
 } from "../auto-reply/get-reply-options.types.js";
-import type { HeartbeatToolResponse } from "../auto-reply/heartbeat-tool-response.js";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
 import type { ReasoningLevel, ThinkLevel, VerboseLevel } from "../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -85,7 +84,6 @@ export type SubscribeEmbeddedAgentSessionParams = {
   }) => void;
   onAgentEvent?: (evt: EmbeddedAgentEvent) => void | Promise<void>;
   onToolStreamBoundary?: () => void | Promise<void>;
-  onHeartbeatToolResponse?: (response: HeartbeatToolResponse) => void | Promise<void>;
   /** "finishing" defers both success and error terminal ownership to the caller. */
   terminalLifecyclePhase?: "end" | "finishing";
   /** Read immediately before terminal lifecycle emission. */

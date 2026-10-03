@@ -35,7 +35,6 @@ import {
   resolveMcpLoopbackPolicyTools,
   resolveMcpLoopbackScopedTools,
 } from "../../gateway/mcp-http.runtime.js";
-import { claimHeartbeatContextForUserRun } from "../../infra/heartbeat-outcome-store.js";
 import { buildSystemAgentToolsMcpServerConfig } from "../../mcp/openclaw-tools-serve-config.js";
 import { CliBackendAuthProfilePreparationError } from "../../plugins/cli-backend-errors.js";
 import type {
@@ -79,7 +78,6 @@ import {
   makeBootstrapWarn as makeBootstrapWarnImpl,
   resolveBootstrapContextForRun as resolveBootstrapContextForRunImpl,
 } from "../bootstrap-files.js";
-import { isHeartbeatLifecycleRunKind } from "../bootstrap-mode.js";
 import { isPrimaryBootstrapRun, resolveWorkspaceBootstrapRouting } from "../bootstrap-routing.js";
 import {
   CLI_AUTH_EPOCH_VERSION,
@@ -152,7 +150,6 @@ import { detectNodeClaudePlacement, resolveClaudeCliContextModelId } from "./pre
 import * as mcp from "./prepare-mcp.js";
 import { resolveCliRuntimeToolPolicy } from "./prepare-tool-policy.js";
 import {
-  composeCliPromptContext,
   prependCliSessionDriftUserContext,
   prepareCliSystemPrompt,
   prepareCliTurnPromptContext,
@@ -1785,7 +1782,7 @@ async function prepareCliRunContextWithinReadFence(
     // CLI sessions still receive prior conversation context via stdin.
     const shouldPrepareOpenClawHistoryPrompt =
       !skipsTurnPreparation && (!reusableCliSessionId || allowRawTranscriptReseed);
-    let openClawHistoryPrompt = shouldPrepareOpenClawHistoryPrompt
+    const openClawHistoryPrompt = shouldPrepareOpenClawHistoryPrompt
       ? buildCliSessionHistoryPrompt({
           messages: sessionPromptContext?.reseedMessages ?? [],
           prompt: historyPromptCurrentTurn,
@@ -1936,7 +1933,6 @@ async function prepareCliRunContextWithinReadFence(
       });
       await drainPendingContextEngineTurnsBeforeRun({
         admission: params.userTurnTranscriptRecorder?.getAdmissionReceipt(),
-        isHeartbeat: isHeartbeatLifecycleRunKind(params.bootstrapContextRunKind),
         lease: params.contextEngineLogicalTurnLease,
         recorder: params.userTurnTranscriptRecorder,
         sessionTarget: params.sessionTarget,
@@ -1988,35 +1984,9 @@ async function prepareCliRunContextWithinReadFence(
     }
     const hadSessionFile = await hasCliSessionTranscript(params);
     const contextEngineTurnPrompt = params.transcriptPrompt ?? params.prompt;
-    let preparedParams = await admitFinalParams();
+    const preparedParams = await admitFinalParams();
     bindPreparedParams(preparedParams);
 
-    const note = await claimHeartbeatContextForUserRun({
-      ...preparedParams,
-      agentId: sessionAgentId,
-      storePath: params.sessionTarget?.storePath ?? params.storePath,
-      detached: Boolean(params.sessionManager || params.isolatedCompletion),
-      assertCurrent: createCliRunCurrentAssertion(preparedParams),
-    });
-    if (note) {
-      preparedParams = {
-        ...preparedParams,
-        transcriptPrompt: finalizedTranscriptPrompt ?? params.prompt,
-      };
-      const append = (text: string) => composeCliPromptContext(text, { appendContext: note });
-      if (executionTarget.kind === "plugin") {
-        promptContext = {
-          ...promptContext,
-          appendContext: append(promptContext?.appendContext ?? ""),
-        };
-        promptForHooks = append(promptForHooks ?? preparedParams.prompt);
-      } else {
-        preparedParams.prompt = append(preparedParams.prompt);
-        if (openClawHistoryPrompt) {
-          openClawHistoryPrompt = append(openClawHistoryPrompt);
-        }
-      }
-    }
     return {
       ...buildPreparedContext(preparedParams),
       ...(managedClaudeLiveSessionGeneration

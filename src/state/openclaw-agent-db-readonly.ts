@@ -65,15 +65,6 @@ export function retainOpenClawAgentDatabaseReadOnly(
   | { found: false; reason: "database-missing" | "schema-missing" } {
   const opened = findOpenAgentDatabase(options);
   if (opened && !opened.db.isTransaction) {
-    runSqliteReadOperationSync(
-      opened.db,
-      () => {
-        const version = assertSupportedAgentSchemaVersion(opened.db, opened.path);
-        assertCanonicalAgentPersistenceVersion(opened.db, opened.path, version);
-        assertCanonicalSessionValidationSchema(opened.db);
-      },
-      "fresh",
-    );
     const borrowed = borrowOpenClawAgentDatabase(options);
     return {
       found: true,

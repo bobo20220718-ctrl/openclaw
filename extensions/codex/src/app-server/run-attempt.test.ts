@@ -1330,8 +1330,8 @@ describe("runCodexAppServerAttempt", () => {
       const userMessagePersisted = createDeferred<void>();
       const onUserMessagePersisted = vi.fn(() => userMessagePersisted.resolve());
       params.onUserMessagePersisted = onUserMessagePersisted;
-      const run = runCodexAppServerAttempt(params);
-      await harness.waitForMethod("turn/start");
+      const { run, started } = startClockControlledAttempt(params);
+      await started;
       await awaitGateBeforeSettlement(
         userMessagePersisted.promise,
         run,
@@ -1389,7 +1389,7 @@ describe("runCodexAppServerAttempt", () => {
       } else {
         await harness.notify(turnCompleted({ id: "turn-1", status: outcome }));
       }
-      await run;
+      expect(readAttemptTerminal(await run)).toMatchObject({ timedOut: false });
       const messagesAfterCompletion = await readTranscriptMessagesByIdentity(params);
       expect(messagesAfterCompletion.filter((message) => message.role === "user")).toHaveLength(1);
       for (const message of workBeforeCompletion) {

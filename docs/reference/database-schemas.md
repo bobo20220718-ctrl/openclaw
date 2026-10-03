@@ -15,6 +15,8 @@ Schema-version, integrity, canonical-index, and table-existence checks belong to
 
 Shared-state and agent read-only connections reuse bounded prepared statements under their native connection lifecycle. Queries still execute on every read. Read admission shares one freshness probe within its synchronous operation; schema-fact lookups reuse the admitted handle without probing again. Write transactions refresh after acquiring `BEGIN`, before consuming those facts. Explicit fresh probes always execute, even inside another read operation. A foreign commit compares the schema and user versions before retaining or replacing schema facts, preserving active SQLite snapshots. Closing or replacing the connection clears retained statements and facts.
 
+Canonical main-key policy reads reuse the existing reader admission's value only within a current read operation. The connection owner tracks local SQL mutations, including raw and trigger-driven writes; its mutation revision, admitted schema facts, and observed foreign-commit version invalidate that value. Transactions, pinned snapshots, native mutation callbacks, and authorizer-controlled reads continue querying the policy. Continuation authority remains with canonical session admission.
+
 The Gateway does not schedule full-database integrity scans after startup or on a
 daily timer. Use [Doctor maintenance](/reference/database-schemas/integrity-and-recovery#integrity-checks)
 for operator-requested or scheduled full verification. Admission-requested

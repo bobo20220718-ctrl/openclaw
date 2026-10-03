@@ -524,7 +524,7 @@ export async function compactEmbeddedAgentSessionDirect(
           fallbacksOverride,
           classifyResult: ({ result, provider, model }) =>
             classifyCompactionFallbackResult(result, provider, model),
-          run: async (provider, model) => {
+          run: async (provider, model, options) => {
             const isPrimaryCandidate =
               provider === resolvedPrimaryCandidate?.provider &&
               model === resolvedPrimaryCandidate.model;
@@ -542,6 +542,9 @@ export async function compactEmbeddedAgentSessionDirect(
               // actual fallback may change route/auth class and must rebuild it.
               runtimeAuthPlan: isPrimaryCandidate ? params.runtimeAuthPlan : undefined,
               runtimePlan: isPrimaryCandidate ? params.runtimePlan : undefined,
+              ...(options?.isFinalFallbackAttempt === false
+                ? { summaryFailoverPending: true as const }
+                : {}),
             });
           },
         });

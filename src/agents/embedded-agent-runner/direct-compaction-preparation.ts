@@ -49,6 +49,8 @@ export type PreparedCompactEmbeddedAgentSessionParams = CompactEmbeddedAgentSess
   sessionFile: string;
   preparedModelRuntime: PreparedModelRuntimeSnapshot;
   requestedRouteResolution?: "resolved";
+  /** A later model-fallback candidate retries this attempt's failover-eligible summary failure. */
+  summaryFailoverPending?: true;
   transcriptBytePreflightAuthority?: true;
   transcriptByteCompactionPersistence?: TranscriptByteCompactionPersistence;
   transcriptByteCompactionPersistenceAsync?: TranscriptByteCompactionPersistenceAsync;

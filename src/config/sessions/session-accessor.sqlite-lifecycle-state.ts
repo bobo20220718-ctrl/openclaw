@@ -343,7 +343,7 @@ export function readSessionGenerationIdsForKeys(
   ).rows.map((row) => row.session_id);
 }
 
-/** Raw Doctor removals also guard cold changes while the hot blob remains unchanged. */
+/** Raw Doctor removals guard the node, snapshots, and retained window in one read. */
 export function assertRawSessionEntryRemovalUnchanged(
   database: Pick<OpenClawAgentDatabase, "db">,
   sessionKey: string,
@@ -354,14 +354,16 @@ export function assertRawSessionEntryRemovalUnchanged(
     database.db,
     getSessionKysely(database.db)
       .selectFrom("session_nodes")
+      .leftJoin("session_windows", "session_windows.session_id", "session_nodes.current_session_id")
       .select([
-        "entry_json",
-        "snapshot_revision",
-        "current_session_id",
-        "entry_valid",
-        "updated_at",
+        "session_nodes.entry_json",
+        "session_nodes.snapshot_revision",
+        "session_nodes.current_session_id",
+        "session_nodes.entry_valid",
+        "session_nodes.updated_at",
+        "session_windows.session_key as window_session_key",
       ])
-      .where("session_key", "=", sessionKey),
+      .where("session_nodes.session_key", "=", sessionKey),
   );
   if (
     !row ||
@@ -374,17 +376,12 @@ export function assertRawSessionEntryRemovalUnchanged(
   ) {
     throw new Error(`SQLite session entry changed before raw lifecycle removal for ${sessionKey}`);
   }
-  if (removal.kind === "retained" && options.requireOwnedWindow !== false) {
-    const window = executeSqliteQueryTakeFirstSync(
-      database.db,
-      getSessionKysely(database.db)
-        .selectFrom("session_windows")
-        .select("session_key")
-        .where("session_id", "=", removal.expectedSessionId),
-    );
-    if (window?.session_key !== sessionKey) {
-      throw new Error(`SQLite retained session window changed before removal for ${sessionKey}`);
-    }
+  if (
+    removal.kind === "retained" &&
+    options.requireOwnedWindow !== false &&
+    row.window_session_key !== sessionKey
+  ) {
+    throw new Error(`SQLite retained session window changed before removal for ${sessionKey}`);
   }
 }
 

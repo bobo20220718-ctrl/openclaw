@@ -46,6 +46,7 @@ import {
   refreshChatModelCatalogOnDemand,
   refreshChatModelAuthStatus,
   retireChatMetadataRequests,
+  readChatRequiredWorkerInferenceProfileId,
 } from "./chat-state-refresh.ts";
 import { selectedChatSessionRow } from "./chat-state-route.ts";
 import { buildChatItems } from "./chat-thread-build.ts";
@@ -4792,6 +4793,81 @@ describe("refreshChatMetadata", () => {
       expect(state.chatModelCatalogError).toBeNull();
     },
   );
+
+  it.each(["session", "client", "epoch", "disconnect", "retire"] as const)(
+    "retires the required-worker sync hint fact on %s changes",
+    async (change) => {
+      const request = vi.fn(async () => ({
+        commands: [],
+        models: [],
+        requiredWorkerInferenceProfileId: "coding",
+      }));
+      const state = createMetadataState(request);
+      try {
+        await refreshChatMetadata(state);
+        expect(readChatRequiredWorkerInferenceProfileId(state)).toBe("coding");
+        if (change === "session") {
+          state.sessionKey = "agent:work:second";
+        }
+        if (change === "client") {
+          state.client = createTestGatewayClient(request);
+        }
+        if (change === "epoch") {
+          state.connectionEpoch = (state.connectionEpoch ?? 0) + 1;
+        }
+        if (change === "disconnect") {
+          state.connected = false;
+        }
+        if (change === "retire") {
+          retireChatMetadataRequests(state);
+        }
+        expect(readChatRequiredWorkerInferenceProfileId(state)).toBeUndefined();
+      } finally {
+        retireChatMetadataRequests(state);
+        state.sessions.dispose();
+      }
+    },
+  );
+
+  it("keeps the required-worker sync hint while policy is stale, missing or failed", async () => {
+    let policy: { commands: never[]; requiredWorkerInferenceProfileId?: string } = {
+      commands: [],
+      requiredWorkerInferenceProfileId: "coding",
+    };
+    const request = vi.fn(async (method: string) =>
+      method === "chat.metadata" ? policy : { models: [] },
+    );
+    const state = createMetadataState(request);
+    try {
+      await refreshChatMetadata(state);
+      expect(readChatRequiredWorkerInferenceProfileId(state)).toBe("coding");
+      policy = { commands: [] };
+      invalidateChatMetadataStore(state.client!);
+      expect(readChatRequiredWorkerInferenceProfileId(state)).toBeUndefined();
+      await refreshChatMetadata(state);
+      expect(readChatRequiredWorkerInferenceProfileId(state)).toBeUndefined();
+      policy = { commands: [], requiredWorkerInferenceProfileId: "coding" };
+      await revalidateChatMetadata(state.client!, {
+        agentId: "work",
+        sessionKey: state.sessionKey,
+      });
+      expect(readChatRequiredWorkerInferenceProfileId(state)).toBe("coding");
+      request.mockImplementation(async (method) => {
+        if (method === "chat.metadata") {
+          throw new Error("Policy unavailable");
+        }
+        return { models: [] };
+      });
+      await revalidateChatMetadata(state.client!, {
+        agentId: "work",
+        sessionKey: state.sessionKey,
+      }).catch(() => undefined);
+      expect(readChatRequiredWorkerInferenceProfileId(state)).toBeUndefined();
+    } finally {
+      retireChatMetadataRequests(state);
+      state.sessions.dispose();
+    }
+  });
 
   it("does not apply session metadata after a same-agent session switch", async () => {
     const { promise: metadata, resolve: resolveMetadata } = createDeferred<{

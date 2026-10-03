@@ -56,6 +56,9 @@ export function resolveWorkerPlacementModelRuntime(
   },
 ): string {
   const sessionRuntimeOverride = resolveSessionRuntimeOverrideForProvider(params);
+  if (params.cfg.cloudWorkers?.requiredProfile && !sessionRuntimeOverride) {
+    return "openclaw";
+  }
   const pinnedHarnessId = resolveSessionPinnedHarnessId(params.entry);
   const locksPersistedHarness =
     pinnedHarnessId !== undefined && pinnedHarnessId === sessionRuntimeOverride;

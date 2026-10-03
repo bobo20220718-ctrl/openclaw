@@ -95,6 +95,7 @@ export class DraftPlaceState {
   private agentSelectedByUser = false;
   private routeModelIntentActive = true;
   private folderSelectedByUser = false;
+  private requiredModelDefaults = false;
 
   private readonly restoreState = createDraftPlaceRestoreState();
   readonly modelControl: NewSessionModelControl;
@@ -174,11 +175,11 @@ export class DraftPlaceState {
   }
 
   get freshWorkspace(): boolean {
-    return this.remotePlacement && this.freshWorkspaceValue;
+    return this.requiredPlacement || (this.remotePlacement && this.freshWorkspaceValue);
   }
 
   get remoteRepository(): SessionCreateParams["repository"] {
-    return this.repositoryState.remoteRepository;
+    return this.requiredPlacement ? undefined : this.repositoryState.remoteRepository;
   }
 
   get worktreeName(): string {
@@ -194,23 +195,43 @@ export class DraftPlaceState {
   }
 
   get deviceId(): string {
-    return this.deviceIdValue;
+    return this.requiredPlacement ? "" : this.deviceIdValue;
   }
 
   get autoDevice(): boolean {
-    return this.autoDeviceValue;
+    return !this.requiredPlacement && this.autoDeviceValue;
   }
 
   get remotePlacement(): boolean {
-    return Boolean(this.deviceIdValue || this.autoDeviceValue || this.cloudProfileIdValue);
+    return Boolean(
+      this.requiredPlacement ||
+      this.deviceIdValue ||
+      this.autoDeviceValue ||
+      this.cloudProfileIdValue,
+    );
+  }
+
+  get requiredPlacement(): boolean {
+    return Boolean(this.gateway.requiredProfile) && !catalog.isTarget(this.read().data);
+  }
+
+  get requiredWorkerInference(): boolean {
+    return (
+      this.requiredPlacement &&
+      this.gateway.cloudProfiles.some(
+        (profile) => profile.id === this.gateway.requiredProfile && profile.inference === "worker",
+      )
+    );
   }
 
   get cloudProfileId(): string {
-    return this.cloudProfileIdValue;
+    return this.requiredPlacement ? this.gateway.requiredProfile! : this.cloudProfileIdValue;
   }
 
   get cloudSelection() {
-    return this.cloudMachines.selection(this.cloudProfileIdValue, this.gateway.cloudProfiles);
+    return this.requiredPlacement
+      ? { os: "", machineClass: "" }
+      : this.cloudMachines.selection(this.cloudProfileIdValue, this.gateway.cloudProfiles);
   }
 
   get agentsHydrated(): boolean {
@@ -235,6 +256,9 @@ export class DraftPlaceState {
   }
 
   get placementPreferenceReady(): boolean {
+    if (this.requiredPlacement) {
+      return true;
+    }
     return draftPlacePreferenceReady(
       this.restoreState,
       this.freshWorkspace || this.repositoryState.preferenceReady,
@@ -372,6 +396,7 @@ export class DraftPlaceState {
     this.modelControl.load(snapshot.context, this.agentIdValue, !catalog.isTarget(snapshot.data), {
       agent: this.selectedAgent(),
       preference,
+      configuredDefaults: this.requiredPlacement,
       initialModel: this.routeModelIntentActive
         ? catalog.requestedModelForAgent(snapshot.data, this.agentIdValue)
         : undefined,
@@ -617,7 +642,7 @@ export class DraftPlaceState {
 
   selectDevice(deviceId: string, autoDevice = false) {
     const snapshot = this.read();
-    if (snapshot.submitting || snapshot.pendingPlacementSessionKey) {
+    if (this.requiredPlacement || snapshot.submitting || snapshot.pendingPlacementSessionKey) {
       return;
     }
     if (
@@ -658,6 +683,7 @@ export class DraftPlaceState {
     if (
       snapshot.submitting ||
       snapshot.pendingPlacementSessionKey ||
+      this.requiredPlacement ||
       !this.isAdmin() ||
       !profile ||
       Boolean(this.modelControl.cloudRuntimeUnsupportedReason(profile))
@@ -707,6 +733,28 @@ export class DraftPlaceState {
   }
 
   restorePreferenceSelections() {
+    if (this.requiredModelDefaults !== this.requiredPlacement) {
+      this.requiredModelDefaults = this.requiredPlacement;
+      this.modelControl.load(
+        this.read().context,
+        this.agentId,
+        !catalog.isTarget(this.read().data),
+        {
+          agent: this.selectedAgent(),
+          preference: this.gateway.readPreference(this.agentId),
+          configuredDefaults: this.requiredModelDefaults,
+        },
+      );
+    }
+    if (this.requiredPlacement) {
+      if (
+        this.browser.browserOpen ||
+        (["where", "project", "checkout"] as const).some((kind) => this.browser.popoverOpen(kind))
+      ) {
+        this.browser.close();
+      }
+      return;
+    }
     restoreDraftPlacePreferences({
       state: this.restoreState,
       browser: this.browser,

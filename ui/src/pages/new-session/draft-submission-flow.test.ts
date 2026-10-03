@@ -791,6 +791,9 @@ describe("DraftSubmissionFlow", () => {
       recoveryScope: "principal-a",
       recoveryScopeReady: true,
       request: vi.fn(async (method: string) => {
+        if (method === "agents.list") {
+          return { sessionPlacement: {} };
+        }
         if (method === "models.list") {
           return { models: [] };
         }
@@ -934,6 +937,7 @@ describe("DraftSubmissionFlow", () => {
       { requestUpdate: vi.fn(), closeTransientUi: vi.fn() },
     );
     gateway.synchronize(context.gateway);
+    await gateway.refreshCloudProfiles();
     place.setAgentsHydrated(true);
     place.adoptAgentDefaults();
     flow.setMessage("@Alex keep this cloud task", [

@@ -36,6 +36,7 @@ import {
   WorkerDispatchTargetChangedError,
 } from "./server-worker-placement-session-target.js";
 import { recoverGatewayWorkerPlacementWorkspaces } from "./server-worker-placement-workspace-recovery.js";
+import { createLazyRequiredWorkerSessionPreparer } from "./server-worker-required-profile-loader.js";
 import { materializeSessionRepositoryWorkspaceOnGateway } from "./session-repository-materialization.js";
 import { createDevicePlacementAuthority } from "./worker-environments/device-placement-eligibility.js";
 import {
@@ -316,6 +317,17 @@ export function createGatewayWorkerPlacementRuntime(
     }),
     publishPlacementChanges,
   );
+  const redispatchPlacement = createWorkerPlacementRedispatch({
+    placements: params.placements,
+    dispatch: dispatchService.dispatch,
+    resolveDevicePlacementRequirement,
+  });
+  const prepareRequiredSession = createLazyRequiredWorkerSessionPreparer({
+    ...params,
+    getConfig: getRuntimeConfig,
+    redispatchPlacement,
+    dispatch: dispatchService,
+  });
   const placementIdleSweep = createWorkerPlacementIdleSweep({
     placements: params.placements,
     environments: params.environments,
@@ -335,17 +347,14 @@ export function createGatewayWorkerPlacementRuntime(
     warn: params.warn,
   });
   const admissionProvider = createWorkerSessionTurnPlacementProvider({
+    prepareRequiredSession,
     environments: params.environments,
     placements: params.placements,
     resolveWorkspace,
     reconcileActivePlacement: async (id) => await dispatchService.reconcileActive(id),
     waitForAdmissionNode: runtimeRefresh.wait,
     waitForInitialPlacement: dispatchService.waitForInitialPlacement,
-    redispatchPlacement: createWorkerPlacementRedispatch({
-      placements: params.placements,
-      dispatch: dispatchService.dispatch,
-      resolveDevicePlacementRequirement,
-    }),
+    redispatchPlacement,
     workspaceOperations,
     prepareAcceptedWorkspacePublication,
     publishAcceptedWorkspace,
@@ -572,7 +581,7 @@ export function createGatewayWorkerPlacementRuntime(
     }
   };
   return {
-    dispatchService,
+    dispatchService: Object.assign(dispatchService, { prepareRequiredSession }),
     admissionProvider,
     diskSpace,
     runnerAvailability,

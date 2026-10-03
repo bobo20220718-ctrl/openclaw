@@ -85,7 +85,10 @@ export const AgentSummarySchema = closedObject({
 });
 
 /** Empty request payload for listing configured agents. */
-export const AgentsListParamsSchema = closedObject({});
+export const AgentsListParamsSchema = closedObject({
+  /** Request only the session destination directive, not worker inventory or command grants. */
+  includeSessionPlacement: Type.Optional(Type.Boolean()),
+});
 
 export const AgentOwnershipSchema = Type.Union([
   Type.Literal("sole"),
@@ -94,6 +97,18 @@ export const AgentOwnershipSchema = Type.Union([
 ]);
 
 export const AgentsListResultSchema = closedObject({
+  sessionPlacement: Type.Optional(
+    closedObject({
+      requiredProfile: Type.Optional(
+        closedObject({
+          id: NonEmptyString,
+          providerId: Type.Optional(NonEmptyString),
+          executionModes: Type.Optional(Type.Array(Type.Literal("worker-turn"))),
+          inference: Type.Optional(Type.Literal("worker")),
+        }),
+      ),
+    }),
+  ),
   defaultId: NonEmptyString,
   ownership: Type.Optional(AgentOwnershipSchema),
   selectionRequired: Type.Optional(Type.Boolean()),

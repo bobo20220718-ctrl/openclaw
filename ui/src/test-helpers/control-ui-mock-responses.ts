@@ -63,7 +63,15 @@ export function createControlUiMockResponses(
     return undefined;
   }
 
-  function applyAgentModel(method: string, value: unknown): unknown {
+  function applyAgentModel(method: string, response: unknown, params?: unknown): unknown {
+    const value =
+      method === "agents.list" &&
+      isRecord(response) &&
+      Array.isArray(response.agents) &&
+      isRecord(params) &&
+      params.includeSessionPlacement === true
+        ? { sessionPlacement: {}, ...response }
+        : response;
     if (!input.agentModel || !isRecord(value)) {
       return value;
     }

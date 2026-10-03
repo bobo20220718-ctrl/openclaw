@@ -27,7 +27,7 @@ import {
   prepareLogicalVisibleModelCatalog,
 } from "../../agents/model-catalog-visibility.js";
 import type { ModelCatalogSnapshot, ModelCatalogEntry } from "../../agents/model-catalog.types.js";
-import { createModelFastModeResolver } from "../../agents/model-fast-mode.js";
+import { createModelSpeedPolicyResolver } from "../../agents/model-fast-mode.js";
 import { modelKey } from "../../agents/model-ref-shared.js";
 import { dedupeModelCatalogEntries } from "../../agents/model-selection-shared.js";
 import {
@@ -120,7 +120,7 @@ export function createGatewayAgentModelCatalogProjector(params: ModelCatalogDeci
 function createPublicModelsListProjector(params: {
   pluginRegistry?: ModelCatalogDecisionParams["pluginRegistry"];
   thinkingCatalog: ModelCatalogEntry[];
-  fastMode: ReturnType<typeof createModelFastModeResolver>;
+  fastMode: ReturnType<typeof createModelSpeedPolicyResolver>;
   snapshot: ModelCatalogSnapshot;
   accountCatalog?: ModelCatalogDecisionParams["accountCatalog"];
   isCurrent: () => boolean;
@@ -211,13 +211,15 @@ function createPublicModelsListProjector(params: {
     const projectedAvailability = params.preserveUnknownAvailability
       ? evaluation.availability
       : (evaluation.availability ?? false);
-    const supportsFastMode = params.fastMode(entry, evaluation, preparedEntry.agentRuntime?.id);
+    const speedPolicy = params.fastMode(entry, evaluation, preparedEntry.agentRuntime?.id);
+    const supportsFastMode = speedPolicy.supportsFastMode;
     const serviceTiers = resolveModelCatalogServiceTiers({
       snapshot: params.snapshot,
       entry,
       evaluation,
       runtimeId: preparedEntry.agentRuntime?.id ?? "openclaw",
       accountCatalog: params.accountCatalog,
+      modelServiceTiers: speedPolicy.serviceTiers,
       isCurrent: params.isCurrent,
     });
     return Object.assign(
@@ -565,7 +567,7 @@ export async function prepareModelsListResult(
       snapshot: inventoryProjector.snapshot,
       accountCatalog: preparedProjectionOwner?.accountCatalog,
       isCurrent,
-      fastMode: createModelFastModeResolver({
+      fastMode: createModelSpeedPolicyResolver({
         cfg,
         agentId,
         catalog: inventory,
@@ -601,7 +603,7 @@ export async function prepareModelsListResult(
     snapshot: projector.snapshot,
     accountCatalog: preparedProjectionOwner?.accountCatalog,
     isCurrent: () => isCurrent() && projector.isCurrent(),
-    fastMode: createModelFastModeResolver({
+    fastMode: createModelSpeedPolicyResolver({
       cfg,
       agentId,
       catalog,

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import type { ModelCatalogEntry } from "./model-catalog.types.js";
-import { createModelFastModeResolver } from "./model-fast-mode.js";
+import { createModelSpeedPolicyResolver } from "./model-fast-mode.js";
 
 const opus: ModelCatalogEntry = {
   id: "claude-opus-5",
@@ -12,8 +12,12 @@ const opus: ModelCatalogEntry = {
   api: "anthropic-messages",
   baseUrl: "https://api.anthropic.com",
 };
+function fastResolver(params: Parameters<typeof createModelSpeedPolicyResolver>[0]) {
+  const resolve = createModelSpeedPolicyResolver(params);
+  return (...args: Parameters<typeof resolve>) => resolve(...args).supportsFastMode;
+}
 function resolver(cfg: OpenClawConfig = {}) {
-  return createModelFastModeResolver({
+  return fastResolver({
     cfg,
     agentId: "main",
     catalog: [opus],
@@ -43,7 +47,7 @@ describe("private selected Fast metadata", () => {
       { id: "grok-3", name: "Grok 3", provider: "xai", api: "openai-responses" },
       { id: "MiniMax-M2.7", name: "MiniMax M2.7", provider: "minimax", api: "anthropic-messages" },
     ];
-    const resolve = createModelFastModeResolver({
+    const resolve = fastResolver({
       cfg: {
         agents: {
           entries: {

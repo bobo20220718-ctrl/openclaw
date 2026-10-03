@@ -135,3 +135,17 @@ describe("account-bound catalog service tiers", () => {
     ).not.toHaveProperty("modelServiceTiers");
   });
 });
+
+it("keeps model tier restrictions authoritative over optimistic API defaults", () => {
+  const params = {
+    entry: { ...entry, provider: "openai" },
+    evaluation: { ...evaluation, selectedRoute: platformRoute, selectedAuthMode: "api_key" },
+    runtimeId: "openclaw",
+    modelServiceTiers: ["default"],
+  };
+  expect(resolve(params)).toEqual(["default"]);
+  expect(resolve({ ...params, isCurrent: () => false })).toBeUndefined();
+  expect(
+    resolve({ ...params, evaluation: { ...params.evaluation, availability: false } }),
+  ).toBeUndefined();
+});

@@ -184,7 +184,10 @@ describe("chat history model selection defaults", () => {
               sessionKey,
               sessionId,
               messages: [
-                expect.objectContaining({ messageId, content: `Message for ${sessionKey}` }),
+                expect.objectContaining({
+                  __openclaw: expect.objectContaining({ id: messageId }),
+                  content: `Message for ${sessionKey}`,
+                }),
               ],
             }),
           );

@@ -324,7 +324,7 @@ export async function executeWorkerTurn(
     if (!bootstrapReceipt.protocolFeatures.includes(WORKER_GATEWAY_TOOLS_PROTOCOL_FEATURE)) {
       throw new StaleWorkerBuildError();
     }
-    githubGrant = await prepareWorkerGitHubBindingGrant({
+    const preparingGitHubGrant = prepareWorkerGitHubBindingGrant({
       operatorAuthority,
       signal,
       sessionId: placement.sessionId,
@@ -332,6 +332,13 @@ export async function executeWorkerTurn(
       agentId: placement.agentId,
       assertCurrent: isAuthorized,
     });
+    try {
+      githubGrant = await raceNodeWorkerOperation(preparingGitHubGrant, signal);
+    } catch (error) {
+      // The shared account owner may finish after cancellation; retire any late execution copy.
+      void preparingGitHubGrant.then(revokeWorkerGitHubBindingGrant, () => {});
+      throw error;
+    }
     if (signal.aborted) {
       await revokeWorkerGitHubBindingGrant(githubGrant);
       signal.throwIfAborted();

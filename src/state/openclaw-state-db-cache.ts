@@ -143,7 +143,6 @@ export function requireOpenClawStateDatabaseIdentity(
 
 const runtimeFailures = createOpenClawStateDatabaseRuntimeFailureOwner({
   cachedDatabases,
-  latch: terminalOpenLatch,
   evict: evictCachedOpenClawStateDatabase,
   invalidate: (pathname) => asyncResources.invalidate(pathname),
   notifyTerminalFailure: (pathname, error) =>
@@ -366,11 +365,28 @@ function getCachedOpenClawStateDatabase(
     maintenance?.assertAdmission();
   }
   assertExistingOpenClawStateSchemaCacheAdmission(pathname, stateDatabaseLifecycle);
-  const runtimeFailure = runtimeFailures.get(pathname);
+  const runtimeFailure = terminalOpenLatch.get(path.resolve(pathname));
   if (runtimeFailure) {
     throw runtimeFailure;
   }
   const database = cachedDatabases.get(path.resolve(pathname));
+  if (database?.db.isOpen) {
+    try {
+      runSqliteReadOperationSync(database.db, () => {
+        const facts = getAdmittedSqliteSchemaFacts(database.db);
+        if (!facts || facts !== database.schemaFacts) {
+          assertSupportedStateSchemaVersion(database.db, database.path);
+          database.schemaFacts = facts;
+        }
+      });
+    } catch (error) {
+      const failure = runtimeFailures.classify(database, error);
+      if (failure) {
+        throw failure;
+      }
+      return undefined;
+    }
+  }
   if (database && borrowers.get(database.db)?.retiring) {
     throw new Error(`OpenClaw state database native borrower cleanup is pending: ${pathname}`);
   }
@@ -657,7 +673,6 @@ export const openClawStateDatabaseCache = {
   evictCachedOpenClawStateDatabase,
   evictOpenClawStateDatabaseAfterCorruption,
   getCachedOpenClawStateDatabase,
-  getOpenClawStateDatabaseRuntimeFailure: runtimeFailures.get,
   getOpenClawStateDatabaseRecordedFailure: terminalOpenLatch.peek,
   getOpenClawStateDatabaseIfOpenAtPath,
   getKnownOpenClawStateDatabaseIdentity: asyncResources.knownIdentity,

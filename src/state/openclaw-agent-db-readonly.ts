@@ -1,4 +1,6 @@
+import { runSqliteReadOperationSync } from "../infra/sqlite-schema-facts.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { assertCanonicalSessionValidationSchema } from "./openclaw-agent-canonical-validation-schema.js";
 import type {
   OpenClawAgentDatabase,
   OpenClawAgentDatabaseOptions,
@@ -63,6 +65,15 @@ export function retainOpenClawAgentDatabaseReadOnly(
   | { found: false; reason: "database-missing" | "schema-missing" } {
   const opened = findOpenAgentDatabase(options);
   if (opened && !opened.db.isTransaction) {
+    runSqliteReadOperationSync(
+      opened.db,
+      () => {
+        const version = assertSupportedAgentSchemaVersion(opened.db, opened.path);
+        assertCanonicalAgentPersistenceVersion(opened.db, opened.path, version);
+        assertCanonicalSessionValidationSchema(opened.db);
+      },
+      "fresh",
+    );
     const borrowed = borrowOpenClawAgentDatabase(options);
     return {
       found: true,
@@ -113,7 +124,14 @@ export function withOpenClawAgentDatabaseReadOnly<T>(
     );
   }
   // The handle's admission owner refreshes these facts after DDL or a foreign commit.
-  const userVersion = assertSupportedAgentSchemaVersion(processOpened.db, pathname);
-  assertCanonicalAgentPersistenceVersion(processOpened.db, pathname, userVersion);
-  return readOpenClawAgentDatabase(processOpened, operation);
+  return runSqliteReadOperationSync(
+    processOpened.db,
+    () => {
+      const userVersion = assertSupportedAgentSchemaVersion(processOpened.db, pathname);
+      assertCanonicalAgentPersistenceVersion(processOpened.db, pathname, userVersion);
+      assertCanonicalSessionValidationSchema(processOpened.db);
+      return readOpenClawAgentDatabase(processOpened, operation);
+    },
+    "fresh",
+  );
 }

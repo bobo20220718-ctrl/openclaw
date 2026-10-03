@@ -270,13 +270,18 @@ function trackSchemaChanges(
 }
 
 /** Share freshness only within this synchronous call stack, never across an await. */
-export function runSqliteReadOperationSync<T>(database: DatabaseSync, operation: () => T): T {
+export function runSqliteReadOperationSync<T>(
+  database: DatabaseSync,
+  operation: () => T,
+  mode: "cached" | "fresh" = "cached",
+): T {
   const owner = owners.get(database);
   if (!owner?.admitted || owner.authorizerActive) {
     return operation();
   }
   owner.readDepth += 1;
   try {
+    owner.readDataVersion = readSqliteCacheDataVersion(database, mode);
     return operation();
   } finally {
     owner.readDepth -= 1;
@@ -297,11 +302,19 @@ export function readSqliteDataVersion(database: DatabaseSync): number {
   return row.data_version;
 }
 
-/** Foreign commits are observed on the next operation; SQLite owns snapshot visibility. */
-export function readSqliteCacheDataVersion(database: DatabaseSync): number {
+/** Admission observes foreign commits; explicit fresh reads never reuse an operation's probe. */
+export function readSqliteCacheDataVersion(
+  database: DatabaseSync,
+  mode: "cached" | "fresh" = "cached",
+): number {
   const tracked = owners.get(database);
   const owner = tracked?.admitted ? tracked : undefined;
-  if (owner && !owner.authorizerActive && owner.readDataVersion !== undefined) {
+  if (
+    mode === "cached" &&
+    owner &&
+    !owner.authorizerActive &&
+    owner.readDataVersion !== undefined
+  ) {
     return owner.readDataVersion;
   }
   const dataVersion = readSqliteDataVersion(database);
@@ -324,7 +337,7 @@ export function readSqliteCacheDataVersion(database: DatabaseSync): number {
       }
       owner.dataVersion = dataVersion;
     }
-    if (owner.readDepth > 0 && !owner.authorizerActive) {
+    if (mode === "cached" && owner.readDepth > 0 && !owner.authorizerActive) {
       owner.readDataVersion = dataVersion;
     }
   }
@@ -354,10 +367,11 @@ export function admitSqliteSchema(database: DatabaseSync): void {
     throw new Error("SQLite schema admission requires a connection tracked from native open");
   }
   owner.admitted = true;
+  readSqliteCacheDataVersion(database);
   getAdmittedSqliteSchemaFacts(database);
 }
 
-/** Schema changes revoke the admission; ordinary reads consume its recorded facts. */
+/** Consume admitted facts; operation admission owns foreign-commit freshness. */
 export function getAdmittedSqliteSchemaFacts(
   database: DatabaseSync,
 ): SqliteSchemaFacts | undefined {
@@ -366,7 +380,6 @@ export function getAdmittedSqliteSchemaFacts(
   if (!owner?.admitted || owner.authorizerActive) {
     return undefined;
   }
-  readSqliteCacheDataVersion(database);
   const snapshot = getSqlitePinnedReadSnapshot(database);
   if (owner.snapshot && owner.snapshot !== snapshot) {
     invalidate(owner);

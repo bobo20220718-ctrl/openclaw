@@ -8,15 +8,12 @@ import {
   getAgentToolExecutionLocation,
 } from "../../agents/agent-tool-metadata.js";
 import { createOpenClawCodingToolsInternal } from "../../agents/agent-tools.js";
-import { collectTextContentBlocks } from "../../agents/content-blocks.js";
 import { applyEmbeddedAttemptToolsAllow } from "../../agents/embedded-agent-runner/run/attempt-tool-construction-plan.js";
-import { recordModelFallbackStop } from "../../agents/failover-error.js";
 import {
   loadManifestModelCatalog,
   overlayConfiguredModelCatalog,
 } from "../../agents/model-catalog.js";
 import { acquireAgentRunPreparedModelRuntime } from "../../agents/prepared-model-runtime.js";
-import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { createLibrarySkillWorkshopTool } from "../../agents/tools/skill-workshop-tool-library.js";
 import { buildProactiveSubagentOrchestrationSection } from "../../agents/ultra-orchestration.js";
 import { resolveProviderThinkingLevel } from "../../auto-reply/thinking.js";
@@ -111,15 +108,13 @@ export async function executeWorkerTurn(
   await recoverWorkspaceBeforeTurn({ ...params, signal: turn.abortSignal });
   params.assertRunCurrent?.();
   turn.abortSignal?.throwIfAborted();
-  // Shared account refresh and repository lookup own their own lifetime. A
-  // cancelled turn may stop waiting, but cannot consume a late binding.
-  const githubContext = {
-    ...placement,
-    assertCurrent: () =>
-      !turn.abortSignal?.aborted && params.placements.validateTurnClaim(params.turnClaim),
-  };
+  // Cancellation stops this turn waiting, not the shared account lookup.
   const githubPublicationAvailable = await raceNodeWorkerOperation(
-    prepareGitHubPublicationAvailability(githubContext),
+    prepareGitHubPublicationAvailability({
+      ...placement,
+      assertCurrent: () =>
+        !turn.abortSignal?.aborted && params.placements.validateTurnClaim(params.turnClaim),
+    }),
     turn.abortSignal,
   );
   params.assertRunCurrent?.();
@@ -256,24 +251,28 @@ export async function executeWorkerTurn(
     assertCurrent: assertContextCurrent,
     computerAvailable: Boolean(computer),
   });
-  const { operationalRunInstance, runtimeIdentity, operatorAuthority, assertActive, takeFinishingOutcome } =
-    await prepareWorkerAgentRuntimeIdentity({
-      ...params,
-      agentId: placement.agentId,
-      runtimeInstanceId: placement.environmentId,
-      sessionKey: placement.sessionKey,
-      sessionTarget: transcriptTarget,
-      promptCacheContext: {
-        boundaryCount: manager.getBoundaryCount(),
-        promptCacheKey: turn.promptCacheKey,
-        fastMode: turn.fastMode,
-        fastModeStartedAtMs: turn.fastModeStartedAtMs,
-        fastModeAutoOnSeconds: turn.fastModeAutoOnSeconds,
-      },
-      assertSourceCurrent,
-    });
+  const {
+    operationalRunInstance,
+    runtimeIdentity,
+    operatorAuthority,
+    assertActive,
+    takeFinishingOutcome,
+  } = await prepareWorkerAgentRuntimeIdentity({
+    ...params,
+    agentId: placement.agentId,
+    runtimeInstanceId: placement.environmentId,
+    sessionKey: placement.sessionKey,
+    sessionTarget: transcriptTarget,
+    promptCacheContext: {
+      boundaryCount: manager.getBoundaryCount(),
+      promptCacheKey: turn.promptCacheKey,
+      fastMode: turn.fastMode,
+      fastModeStartedAtMs: turn.fastModeStartedAtMs,
+      fastModeAutoOnSeconds: turn.fastModeAutoOnSeconds,
+    },
+    assertSourceCurrent,
+  });
   assertActive();
-  const authority = runtimeIdentity.approvalAuthority;
   const authorityAbort = new AbortController();
   const signal = AbortSignal.any(
     [turn.abortSignal, operatorAuthority?.signal, authorityAbort.signal].filter(
@@ -325,23 +324,18 @@ export async function executeWorkerTurn(
       throw new StaleWorkerBuildError();
     }
     const preparingGitHubGrant = prepareWorkerGitHubBindingGrant({
+      ...placement,
       operatorAuthority,
       signal,
-      sessionId: placement.sessionId,
-      sessionKey: placement.sessionKey,
-      agentId: placement.agentId,
       assertCurrent: isAuthorized,
     });
     try {
       githubGrant = await raceNodeWorkerOperation(preparingGitHubGrant, signal);
+      signal.throwIfAborted();
     } catch (error) {
       // The shared account owner may finish after cancellation; retire any late execution copy.
       void preparingGitHubGrant.then(revokeWorkerGitHubBindingGrant, () => {});
       throw error;
-    }
-    if (signal.aborted) {
-      await revokeWorkerGitHubBindingGrant(githubGrant);
-      signal.throwIfAborted();
     }
     if (githubGrant?.refresh) {
       bindWorkerTurnGitHubGrant(params.placements, params.turnClaim, githubGrant);
@@ -658,12 +652,11 @@ export async function executeWorkerTurn(
     if (!dispatchReady) {
       throw new Error("Cloud worker launch completed before transport dispatch");
     }
-    const runtimeResult = parseWorkerTurnProcessResult(processResult);
     const { terminal, text, workerMessages, workerFailure } = await readWorkerTurnTerminalResult({
       transcriptTarget,
       placements: params.placements,
       turnClaim: params.turnClaim,
-      runtimeResult,
+      runtimeResult: parseWorkerTurnProcessResult(processResult),
       baseLeafId,
       takeFinishingOutcome,
       deliveryId: credential.deliveryId,

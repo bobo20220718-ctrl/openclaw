@@ -120,7 +120,7 @@ Native dependency policy:
       spawns can inherit another worker's temporary output pipe handles and
       prevent that worker's child cleanup from observing EOF. Worker counts
       and file parallelism remain unchanged.
-    - SQLite admission runs before test collection in each Vitest worker. Threads
+    - SQLite admission runs before test collection in each Vitest worker. Bun threads
       inherit the config process's decision; OS forks initialize it locally.
       Bun runs the existing native-close conformance probe before database pools
       capture their policy; Node retains its runtime-provided capability.

@@ -1,0 +1,285 @@
+# Task-only diagnosis; neither job can land or publish a change.
+name: PR 156941 product phase diagnostic
+run-name: PR 156941 product phase diagnostic
+
+on:
+  push:
+    branches: [test/pr-156941-product-diagnostic]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-156941-product-diagnostic
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CANDIDATE_SHA: 850cfd2b1dfb3fe9be0bd5d261761772ba3857c6
+  BASE_SHA: 5076c4156b7037b72f4e0eb910906f3569383685
+  ORIGINAL_FIXTURE_BLOB: d7f6d610a68ba7e3617ad602178636c4736da0f8
+  OVERLAY_SHA256: 1dbe2d3d9d90aa45de18db97523e26a2c56c865d1919ea74db3cf32847f28aa9
+  NODE_VERSION: "24.21.0"
+
+jobs:
+  proof:
+    name: ${{ matrix.lane }}
+    if: github.ref == 'refs/heads/test/pr-156941-product-diagnostic'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PROOF_LANE: ${{ matrix.lane }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        lane: [product-diagnostic, remaining-owners]
+    steps:
+      - name: Validate immutable proof inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ORIGINAL_FIXTURE_BLOB" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$OVERLAY_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]
+          PROOF_DIR="$RUNNER_TEMP/pr-156941-product-diagnostic"
+          printf 'PROOF_DIR=%s\n' "$PROOF_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$PROOF_DIR"
+
+      - name: Checkout exact candidate without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+
+      - name: Verify secretless candidate and public comparison sources
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert actual == os.environ['CANDIDATE_SHA'], 'Candidate identity changed'
+          secret_names = (
+              'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY',
+              'GH_TOKEN', 'GITHUB_TOKEN', 'NPM_TOKEN', 'NODE_AUTH_TOKEN',
+              'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+              'GOOGLE_APPLICATION_CREDENTIALS', 'SSH_AUTH_SOCK',
+          )
+          assert not any(os.environ.get(name) for name in secret_names), 'Unexpected task credential in proof environment'
+          credential_config = subprocess.run(
+              ['git', 'config', '--get-regexp', r'http\..*extraheader'],
+              text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+          )
+          assert credential_config.returncode == 1, 'Git authentication remained after checkout'
+          subprocess.run(['git', 'diff', '--exit-code'], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--exit-code'], check=True)
+          evidence = {
+              'candidate': actual,
+              'base': os.environ['BASE_SHA'],
+              'workflowHead': os.environ['GITHUB_SHA'],
+              'originalFixtureBlob': os.environ['ORIGINAL_FIXTURE_BLOB'],
+              'overlaySha256': os.environ['OVERLAY_SHA256'],
+              'runner': os.environ['RUNNER_ENVIRONMENT'],
+              'lane': os.environ['PROOF_LANE'],
+              'requestedNodeVersion': os.environ['NODE_VERSION'],
+              'secretPreflight': 'passed',
+          }
+          pathlib.Path(os.environ['PROOF_DIR'], 'identity.json').write_text(json.dumps(evidence, indent=2) + '\n')
+          PY
+          git -c core.hooksPath=/dev/null fetch --no-tags --depth=1 \
+            https://github.com/openclaw/openclaw.git "$BASE_SHA" "$GITHUB_SHA"
+
+      - name: Setup maintained Node and pnpm toolchain
+        id: toolchain
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.21.0"
+          install-bun: "false"
+          cache-mode: "off"
+          semantic-checks: "true"
+
+      - name: Verify the effective Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version | tee "$PROOF_DIR/node-version.txt"
+          test "$(cat "$PROOF_DIR/node-version.txt")" = "v$NODE_VERSION"
+
+      - name: Install ripgrep for baseline ratchets
+        if: matrix.lane == 'remaining-owners'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v rg >/dev/null 2>&1; then
+            exit 0
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ripgrep
+
+      - name: Apply and verify the diagnostic-only overlay
+        id: overlay
+        if: matrix.lane == 'product-diagnostic'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          output = pathlib.Path(os.environ['PROOF_DIR'])
+          fixture = 'src/gateway/server.chat-membership-authority.product.test.ts'
+          overlay_path = '.diagnostics/server.chat-membership-authority.product.test.ts'
+          subprocess.run(['git', 'diff', '--exit-code'], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--exit-code'], check=True)
+          original = subprocess.check_output(['git', 'show', os.environ['CANDIDATE_SHA'] + ':' + fixture])
+          original_blob = subprocess.check_output(['git', 'hash-object', '--stdin'], input=original).decode().strip()
+          assert original_blob == os.environ['ORIGINAL_FIXTURE_BLOB'], 'Original fixture drifted'
+          assert pathlib.Path(fixture).read_bytes() == original, 'Fixture changed before overlay'
+          overlay = subprocess.check_output(['git', 'show', os.environ['GITHUB_SHA'] + ':' + overlay_path])
+          assert hashlib.sha256(overlay).hexdigest() == os.environ['OVERLAY_SHA256'], 'Overlay hash mismatch'
+          pattern = rb'(?m)^[ \t]*// BEGIN PR156941 DIAGNOSTIC\n[\s\S]*?^[ \t]*// END PR156941 DIAGNOSTIC\n'
+          assert len(re.findall(pattern, overlay)) == 57, 'Diagnostic block inventory drifted'
+          assert re.sub(pattern, b'', overlay) == original, 'Overlay changed original test bytes'
+          # Exact byte recovery preserves every assertion, RPC, ordering edge and 90s budget.
+          (output / 'fixture-original.ts').write_bytes(original)
+          (output / 'fixture-overlay.ts').write_bytes(overlay)
+          pathlib.Path(fixture).write_bytes(overlay)
+          patch = subprocess.check_output(['git', 'diff', '--no-ext-diff', '--', fixture])
+          assert subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines() == [fixture]
+          (output / 'overlay.patch').write_bytes(patch)
+          (output / 'overlay-preservation.json').write_text(json.dumps({
+              'originalFixtureBlob': original_blob,
+              'overlaySha256': hashlib.sha256(overlay).hexdigest(),
+              'originalBytesRecoveredExactly': True,
+              'diagnosticBlocks': 57,
+              'maxRegularDiagnosticRecords': 160,
+              'failureDiagnosticFields': ['event', 'phase', 'elapsedMs', 'providerRequests', 'providerHolds', 'providerResumes', 'records'],
+          }, indent=2) + '\n')
+          PY
+
+      - name: Run the unchanged product scenario once with phase diagnostics
+        if: matrix.lane == 'product-diagnostic'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/run-vitest.mjs \
+            src/gateway/server.chat-membership-authority.product.test.ts \
+            --maxWorkers=1 --reporter=default --reporter=junit \
+            --outputFile="$PROOF_DIR/product.xml" 2>&1 | tee "$PROOF_DIR/product.log"
+
+      - name: Verify the overlay was the only mutation and restore exact candidate
+        if: ${{ always() && matrix.lane == 'product-diagnostic' && steps.overlay.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          output = pathlib.Path(os.environ['PROOF_DIR'])
+          fixture = 'src/gateway/server.chat-membership-authority.product.test.ts'
+          target = pathlib.Path(fixture)
+          original = subprocess.check_output(['git', 'show', os.environ['CANDIDATE_SHA'] + ':' + fixture])
+          try:
+              assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == os.environ['CANDIDATE_SHA']
+              subprocess.run(['git', 'diff', '--cached', '--exit-code'], check=True)
+              assert subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines() == [fixture]
+              assert hashlib.sha256(target.read_bytes()).hexdigest() == os.environ['OVERLAY_SHA256']
+              assert subprocess.check_output(['git', 'diff', '--no-ext-diff', '--', fixture]) == (output / 'overlay.patch').read_bytes()
+          finally:
+              target.write_bytes(original)
+          subprocess.run(['git', 'diff', '--exit-code'], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--exit-code'], check=True)
+          (output / 'source-restoration.json').write_text(json.dumps({
+              'candidate': os.environ['CANDIDATE_SHA'],
+              'onlyHashBoundOverlayChanged': True,
+              'trackedSourceRestored': True,
+          }, indent=2) + '\n')
+          PY
+
+      - name: Run the six remaining owner files on the unmodified candidate
+        if: matrix.lane == 'remaining-owners'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/run-vitest.mjs \
+            src/config/sessions/session-entry-read.worker.test.ts \
+            src/config/sessions/session-entry-readonly.worker.test.ts \
+            src/agents/embedded-agent-runner/run/model-setup.ownership.test.ts \
+            src/auto-reply/reply/session.test.ts \
+            src/agents/embedded-agent-runner/run/lane-controller.writer-claim.test.ts \
+            src/auto-reply/reply/dispatch-from-config.owner-metadata.test.ts \
+            --maxWorkers=1 --reporter=default 2>&1 | tee "$PROOF_DIR/owners.log"
+
+      - name: Check database worker ratchet
+        if: ${{ always() && matrix.lane == 'remaining-owners' && steps.toolchain.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm check:database-worker-ratchet --base "$BASE_SHA" 2>&1 | tee "$PROOF_DIR/worker-ratchet.log"
+
+      - name: Check test mock export ratchet
+        if: ${{ always() && matrix.lane == 'remaining-owners' && steps.toolchain.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm check:test-mock-exports --base "$BASE_SHA" 2>&1 | tee "$PROOF_DIR/mock-ratchet.log"
+
+      - name: Check Madge import cycles
+        if: ${{ always() && matrix.lane == 'remaining-owners' && steps.toolchain.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm check:madge-import-cycles 2>&1 | tee "$PROOF_DIR/madge.log"
+
+      - name: Verify owner checks left the candidate unchanged
+        if: ${{ always() && matrix.lane == 'remaining-owners' && steps.identity.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+          printf '{"candidate":"%s","trackedSourceUnchanged":true}\n' "$CANDIDATE_SHA" > "$PROOF_DIR/source-restoration.json"
+
+      - name: Reject unhandled test or teardown errors
+        if: ${{ always() && steps.toolchain.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, re, xml.etree.ElementTree as ET
+          output = pathlib.Path(os.environ['PROOF_DIR'])
+          for name in ('product.log', 'owners.log'):
+              path = output / name
+              if not path.exists():
+                  continue
+              text = re.sub(r'\x1b\[[0-9;]*m', '', path.read_text())
+              assert not re.search(r'error during close|close timed out after|Unhandled (?:Error|Rejection|Exception)', text), name + ': teardown or unhandled error'
+          if os.environ['PROOF_LANE'] == 'product-diagnostic':
+              report = ET.parse(output / 'product.xml').getroot()
+              cases = list(report.iter('testcase'))
+              assert int(report.attrib['tests']) == 1 and len(cases) == 1, 'Expected exactly one product scenario'
+              assert cases[0].attrib['name'] == 'carries current caller, membership and global ownership through transcript persistence and agent dispatch'
+              assert cases[0].find('skipped') is None, 'Product scenario was skipped'
+              assert int(report.attrib['errors']) == 0 and not report.findall('.//error'), 'Unhandled product test error'
+              (output / 'product-result.json').write_text(json.dumps({
+                  'candidate': os.environ['CANDIDATE_SHA'],
+                  'tests': 1,
+                  'failures': int(report.attrib['failures']),
+                  'errors': 0,
+                  'timeSeconds': report.attrib.get('time'),
+              }, indent=2) + '\n')
+          PY
+
+      - name: Upload exact-candidate proof and diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr-156941-product-diagnostic-${{ matrix.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr-156941-product-diagnostic/
+          if-no-files-found: error
+          retention-days: 7

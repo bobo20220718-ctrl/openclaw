@@ -400,8 +400,8 @@ it(
               expect(new Set(sessionIds.values()).size).toBe(sessionIds.size);
               if (attachments) {
                 const uploaded = history.messages
-                  .flatMap((message) => {
-                    const record = asOptionalRecord(message);
+                  .flatMap((historyMessage) => {
+                    const record = asOptionalRecord(historyMessage);
                     return record ? (readPersistedMediaFacts(record) ?? []) : [];
                   })
                   .filter((fact) => fact.fileName === `${agentId}-notes.txt`);
@@ -421,7 +421,9 @@ it(
               }
               const attachmentRef = attachmentRefs.get(agentId);
               const otherAttachmentRef = attachmentRefs.get(otherAgentId);
-              if (attachmentRef) {
+              // Captioned documents retain replay metadata in storage; the live upload gets
+              // the model-facing attachment note through the current-turn prompt envelope.
+              if (attachments) {
                 expect(providerInput).toContain(attachmentRef);
               }
               if (otherAttachmentRef) {

@@ -22,7 +22,10 @@ import {
 import { normalizeAgentId } from "../routing/session-key.js";
 import { captureAgentDatabaseAdmission } from "./agent-database-admission.js";
 import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
-import { agentDatabaseLifecycle } from "./openclaw-agent-db-lifecycle.js";
+import {
+  agentDatabaseLifecycle,
+  retainIncognitoSharedState,
+} from "./openclaw-agent-db-lifecycle.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "./openclaw-agent-db-resources.js";
 import {
   assertIncognitoAgentDatabasePathAvailable,
@@ -108,6 +111,7 @@ function createIncognitoAgentExecutionOwner(
   let closing: Promise<void> | undefined;
   let nativeStopped: Promise<void> | undefined;
   let unregisterShared: (() => void) | undefined;
+  let releaseShared: (() => void) | undefined;
   const pending = new Set<Promise<unknown>>();
   const assertCurrent = () => {
     if (loss || state === "closed" || state === "closing") {
@@ -128,14 +132,25 @@ function createIncognitoAgentExecutionOwner(
   };
   let granting = false;
   const withGrant = <T>(operation: () => T): T => {
+    const wasGranting = granting;
     granting = true;
     try {
       return operation();
     } finally {
-      granting = false;
+      granting = wasGranting;
     }
   };
-  const sessionFacts = createIncognitoSessionFacts(identity, assertCurrent, withGrant);
+  const assertOutsideGrant = () => {
+    if (granting) {
+      throw new Error("Incognito authority callbacks cannot call their actor");
+    }
+  };
+  const sessionFacts = createIncognitoSessionFacts(
+    identity,
+    assertCurrent,
+    withGrant,
+    assertOutsideGrant,
+  );
   const admission =
     (source: AgentDatabaseIncognitoAuthority): SqliteWorkerAdmissionFactory =>
     () => ({
@@ -282,9 +297,7 @@ function createIncognitoAgentExecutionOwner(
         createAdmission,
         cleanup = false,
       ) => {
-        if (granting) {
-          throw new Error("Incognito authority callbacks cannot call their actor");
-        }
+        assertOutsideGrant();
         currentAuthority.assertCurrent();
         if (cleanup) {
           assertCurrent();
@@ -357,6 +370,7 @@ function createIncognitoAgentExecutionOwner(
         state = "closed";
         unregister();
         unregisterShared?.();
+        releaseShared?.();
         lifecycle.retired();
       })().catch((error: unknown) => {
         closing = undefined;
@@ -377,6 +391,7 @@ function createIncognitoAgentExecutionOwner(
     close: () => owner.close(),
   });
   try {
+    releaseShared = retainIncognitoSharedState(context.environment);
     unregisterShared = registerOpenClawStateDatabaseAsyncResource({
       close: async (sharedIdentity) => {
         if (!sharedIdentity || sharedIdentity.key === context.admission.identity.key) {
@@ -385,6 +400,7 @@ function createIncognitoAgentExecutionOwner(
       },
     });
   } catch (error) {
+    releaseShared?.();
     unregister();
     throw error;
   }

@@ -7,7 +7,11 @@ import { listSessionMembers } from "../config/sessions/session-sharing-store.js"
 import type { SessionMember } from "../config/sessions/session-sharing-store.kernel.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
-import { sessionChangeAffectsStoredRow } from "../sessions/session-row-facts.js";
+import {
+  prepareSessionRowPublicationScope,
+  sessionChangeAffectsStoredRow,
+} from "../sessions/session-row-facts.js";
+import { findOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
 import { getOpenIncognitoAgentDatabase } from "../state/openclaw-agent-db-lifecycle.js";
 import { registerOpenClawAgentDatabaseSyncResource } from "../state/openclaw-agent-db-resources.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
@@ -40,10 +44,19 @@ export async function withQualifiedGatewaySessionStoreTarget<T>(params: {
     assertCurrent: () => void,
   ) => T;
 }): Promise<T> {
+  const publication = prepareSessionRowPublicationScope(
+    [
+      params.logicalStorePath,
+      params.target.storePath,
+      ...(params.target.readSource ? [params.target.readSource.path] : []),
+    ],
+    params.target.readSource?.databaseIdentity,
+  );
   let changed = false;
   const stop = sessionChanges.subscribeFacts((change) => {
     if (
       sessionChangeAffectsStoredRow(change, {
+        ...publication,
         agentId: params.target.agentId,
         sessionKeys: params.target.storeKeys,
       })
@@ -103,6 +116,7 @@ export async function withQualifiedGatewaySessionStoreTarget<T>(params: {
           assertCurrent,
         );
       },
+      { prepareSource: (_input, ...source) => publication.prepareSource(...source) },
     );
   } finally {
     stop();
@@ -132,6 +146,10 @@ export function withIncognitoGatewaySessionStoreTarget<T>(params: {
     env: params.env,
   });
   const database = getOpenIncognitoAgentDatabase(params.identity.agentId, storePath);
+  const publication = prepareSessionRowPublicationScope(
+    [storePath],
+    database && findOpenClawAgentDatabaseIdentity(database)?.identity,
+  );
   // Keep the process-held handle, not a freshly resolved row on every assertion.
   // Retirement revokes this resource even if an identical replacement is opened.
   const revoke = () => {
@@ -146,6 +164,7 @@ export function withIncognitoGatewaySessionStoreTarget<T>(params: {
   const stop = sessionChanges.subscribeFacts((change) => {
     if (
       sessionChangeAffectsStoredRow(change, {
+        ...publication,
         agentId: params.identity.agentId,
         sessionKeys: [params.identity.canonicalKey],
         ignoreStoreTopology: true,

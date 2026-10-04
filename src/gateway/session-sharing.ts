@@ -410,6 +410,8 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
         const previous = consumingSharing;
         consumingSharing = prepared;
         try {
+          // Worker consumption uses pinned profile facts; accepted input custody
+          // rechecks live target policy without retaining that preparation snapshot.
           params.preparedProfiles?.readCurrent();
           prepared.assertCurrent();
           const result = consume();
@@ -467,7 +469,6 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
         currentLookupCaches?: SessionSharingLookupCaches,
         ensuredSessionId?: string,
       ) => {
-        params.preparedProfiles?.readCurrent();
         if (expected?.absentTarget && !expected.created) {
           const currentRoute = consumingSharing
             ? consumingSharing.storageTarget

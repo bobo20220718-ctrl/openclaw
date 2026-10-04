@@ -5,8 +5,12 @@ import { assertAgentRunLifecycleGenerationCurrent } from "../../../infra/agent-e
 import { requireActivePluginRegistry } from "../../../plugins/runtime.js";
 import { resolveSessionPinnedHarnessId } from "../../../sessions/agent-harness-session-key.js";
 import { sessionChanges } from "../../../sessions/session-row-changes.js";
-import { sessionChangeAffectsStoredRow } from "../../../sessions/session-row-facts.js";
+import {
+  prepareSessionRowPublicationScope,
+  sessionChangeAffectsStoredRow,
+} from "../../../sessions/session-row-facts.js";
 import { isIncognitoSessionKey } from "../../../shared/incognito-session-key.js";
+import { resolveIncognitoOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.paths.js";
 import {
   assertOperatorModelAllowed,
   readRunOperatorAuthority,
@@ -65,10 +69,17 @@ async function prepareNativeSessionRuntime(
   });
   const readOwnership = async () => {
     assertCallerCurrent();
+    const publication = prepareSessionRowPublicationScope([
+      admission.storePath,
+      ...(isIncognitoSessionKey(admission.sessionKey)
+        ? [resolveIncognitoOpenClawAgentSqlitePath({ agentId: sessionAgentId })]
+        : []),
+    ]);
     let changed = false;
     const stop = sessionChanges.subscribeFacts((change) => {
       if (
         sessionChangeAffectsStoredRow(change, {
+          ...publication,
           agentId: sessionAgentId,
           sessionKeys: [admission.sessionKey],
         })
@@ -127,6 +138,7 @@ async function prepareNativeSessionRuntime(
             sessionKeys: [admission.sessionKey],
             lifecycleSessionKey: admission.sessionKey,
             storePath: admission.storePath,
+            includeAuthorization: true,
           },
         ],
         ([read]) =>
@@ -134,6 +146,7 @@ async function prepareNativeSessionRuntime(
             read!.result.entries.find((item) => item.sessionKey === admission.sessionKey)?.entry,
             read!.assertCurrent,
           ),
+        { prepareSource: (_input, ...source) => publication.prepareSource(...source) },
       );
     } finally {
       stop();

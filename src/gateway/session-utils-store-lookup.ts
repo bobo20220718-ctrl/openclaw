@@ -18,7 +18,10 @@ import {
   parseAgentSessionKey,
 } from "../routing/session-key.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
-import { sessionChangeAffectsStoredRow } from "../sessions/session-row-facts.js";
+import {
+  prepareSessionRowPublicationScope,
+  sessionChangeAffectsStoredRow,
+} from "../sessions/session-row-facts.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.js";
 import {
   resolveSessionStoreIdentity,
@@ -366,11 +369,16 @@ export async function withGatewaySessionStoreTarget<T>(
       env: inventory.env,
       targetDiscoveryCache,
     });
+    const publications = plan.reads.map((read) => ({
+      read,
+      scope: prepareSessionRowPublicationScope([read.storePath]),
+    }));
     let changed = false;
     const stop = sessionChanges.subscribeFacts((change) => {
       if (
-        plan.reads.some((read) =>
+        publications.some(({ read, scope }) =>
           sessionChangeAffectsStoredRow(change, {
+            ...scope,
             agentId: read.agentId,
             sessionKeys: read.options.exactKeys ?? [],
           }),
@@ -432,6 +440,18 @@ export async function withGatewaySessionStoreTarget<T>(
               }
               consumed = true;
               return consume(target, memberships, assertCurrent);
+            },
+            {
+              prepareSource(input, database, source) {
+                for (const { read, scope } of publications) {
+                  if (
+                    read.storePath === input.storePath &&
+                    (read.agentId ?? identity.agentId) === input.agentId
+                  ) {
+                    scope.prepareSource(database, source);
+                  }
+                }
+              },
             },
           );
         } catch (error) {

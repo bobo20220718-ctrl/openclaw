@@ -308,7 +308,7 @@ it(
       expect(providerErrors).toEqual([]);
 
       // Reset through a separate administrator; member turns must retain their narrow scopes.
-      // The public lifecycle owner gives each matrix cell empty owner histories.
+      // The public lifecycle owner clears prior turns and retains only the reset marker.
       let resetGlobalSessions = false;
       for (const [first, second] of [
         ["main", "work"],
@@ -322,7 +322,16 @@ it(
               ).resolves.toMatchObject({ ok: true });
               await expect(
                 gateway.client.request("chat.history", { sessionKey: "global", agentId }),
-              ).resolves.toMatchObject({ messages: [] });
+              ).resolves.toMatchObject({
+                sessionKey: "global",
+                messages: [
+                  {
+                    role: "system",
+                    content: [{ type: "text", text: "Reset" }],
+                    __openclaw: { kind: "reset" },
+                  },
+                ],
+              });
             }
           }
           resetGlobalSessions = true;

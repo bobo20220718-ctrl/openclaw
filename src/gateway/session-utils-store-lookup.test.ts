@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { err } from "@openclaw/normalization-core/result";
 import { describe, expect, it, vi } from "vitest";
@@ -533,12 +533,20 @@ describe("retained exact row publications", () => {
     "keeps %s rows through non-row events but fences members, aliases and topology",
     async (mode) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
-        const cfg: OpenClawConfig = { agents: { entries: { main: {} } } };
-        const key = "agent:main:main";
+        const cfg: OpenClawConfig = {
+          agents: { entries: { main: {}, research: {} } },
+          session: { scope: "global" },
+        };
+        const key = "global";
         await replaceSessionEntry(
           { agentId: "main", sessionKey: key },
           { sessionId: "retained-row", updatedAt: 1 },
         );
+        await replaceSessionEntry(
+          { agentId: "research", sessionKey: key },
+          { sessionId: "unrelated-row", updatedAt: 1 },
+        );
+        const unrelatedDatabase = openOpenClawAgentDatabase({ agentId: "research" });
         const selected = await withGatewaySessionStoreTarget(
           { cfg, key: "main" },
           (target) => target,
@@ -594,7 +602,33 @@ describe("retained exact row publications", () => {
           assertCurrent();
         });
         await read((assertCurrent) => {
+          addSessionMember(
+            { agentId: "research", sessionKey: key },
+            { identityId: "unrelated-member", addedBy: "owner" },
+          );
+          sessionChanges.emit({
+            all: true,
+            scope: { agentId: "research", storePath: unrelatedDatabase.path },
+          });
+          expect(assertCurrent, "unrelated physical store publication").not.toThrow();
+        });
+        await read((assertCurrent) => {
           expect(removeSessionMember(scope, "revoked-member")?.identityId).toBe("revoked-member");
+          expect(assertCurrent).toThrow("Session sharing facts changed during read");
+        });
+        const database = openOpenClawAgentDatabase({ agentId: "main" });
+        const aliasDirectory = path.join(
+          path.dirname(path.dirname(database.path)),
+          "membership-alias",
+        );
+        symlinkSync(path.dirname(database.path), aliasDirectory, "junction");
+        const aliasPath = path.join(aliasDirectory, path.basename(database.path));
+        openOpenClawAgentDatabase({ agentId: "main", path: aliasPath });
+        await read((assertCurrent) => {
+          addSessionMember(
+            { agentId: "main", sessionKey: key, storePath: aliasPath },
+            { identityId: "aliased-member", addedBy: "owner" },
+          );
           expect(assertCurrent).toThrow("Session sharing facts changed during read");
         });
         const publications: SessionRowChange[] = [

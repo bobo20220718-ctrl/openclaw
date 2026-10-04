@@ -28,10 +28,16 @@ export type SqliteIntegrityCheck = {
 export type SqliteIntegrityOperation<T> = Generator<SqliteIntegrityCheck, T, void>;
 
 export type SqliteIntegrityDiagnostics = {
-  integrityGateReason?: "revoked" | "stale-lease" | "dirty-receipt" | "no-proof" | "lease-class";
-  integrityGateMode?: "full";
+  integrityGateReason?:
+    | "revoked"
+    | "stale-lease-full"
+    | "process-death"
+    | "dirty-receipt"
+    | "no-proof"
+    | "lease-class";
+  integrityGateMode?: "full" | "deferred";
   integrityGateMs?: number;
-  integrityGateOutcome?: "healthy" | "failed" | "cached";
+  integrityGateOutcome?: "healthy" | "failed" | "cached" | "pending";
   integrityCheckSyncMs?: number;
   integrityOutsideCheckMs?: number;
   integrityWorkerCheckMs?: number;

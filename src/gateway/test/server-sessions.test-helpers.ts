@@ -621,6 +621,8 @@ export async function directSessionReq<TPayload = unknown>(
       "chat.startup",
       "chat.history",
       "sessions.list",
+      "sessions.processes.list",
+      "sessions.processes.stop",
       "sessions.describe",
       "sessions.get",
       "sessions.preview",

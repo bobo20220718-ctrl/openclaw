@@ -27,7 +27,16 @@ export async function forkIncognitoSessionFromParent(params: {
   buildEntry: (parent: SessionEntry, current: SessionEntry | undefined) => Promise<SessionEntry>;
   signal?: AbortSignal;
 }): Promise<SessionEntry | undefined> {
-  const { source, destination, sourceAuthority, destinationAuthority, signal } = params;
+  const {
+    source,
+    destination,
+    sourceAuthority,
+    destinationAuthority,
+    signal,
+    forkFrom,
+    buildEntry,
+    supportsCliSessionFork,
+  } = params;
   source.assertCurrent();
   destination.assertCurrent();
   sourceAuthority.assertCurrent();
@@ -44,7 +53,7 @@ export async function forkIncognitoSessionFromParent(params: {
         sourceAuthority,
         {
           type: "session.lifecycle.fork.prepare",
-          input: { parent, forkFrom: params.forkFrom },
+          input: { parent, forkFrom },
         },
         signal,
       );
@@ -59,14 +68,8 @@ export async function forkIncognitoSessionFromParent(params: {
         signal,
       );
       sourceClaim.assertCurrent();
-      const entry = await params.buildEntry(
-        structuredClone(parent.entry),
-        structuredClone(child.entry),
-      );
-      const cliSessionBindings = forkCliSessionBindings(
-        parent.entry,
-        params.supportsCliSessionFork,
-      );
+      const entry = await buildEntry(structuredClone(parent.entry), structuredClone(child.entry));
+      const cliSessionBindings = forkCliSessionBindings(parent.entry, supportsCliSessionFork);
       sourceClaim.assertCurrent();
       child.claim.assertCurrent();
       // Same-actor row/version checks execute in its transaction. Asking the host's

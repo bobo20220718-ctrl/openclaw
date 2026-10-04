@@ -232,7 +232,7 @@ export class SqliteBoardStore implements BoardStore {
             ) {
               throw new BoardValidationError("invalid_operation", "board session changed; retry");
             }
-            currentAuthority.authorize?.(stage, facts);
+            return currentAuthority.authorize?.(stage, facts);
           },
         };
         return execute(writeAuthority);

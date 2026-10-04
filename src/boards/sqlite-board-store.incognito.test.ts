@@ -166,3 +166,42 @@ it("plans interactive widgets outside the actor turn and checks authority after 
     await Promise.allSettled([pending]);
   }
 });
+
+it.each(["transaction", "commit"] as const)(
+  "refuses asynchronous Board authorization after preparation at %s",
+  async (refusedStage) => {
+    let prepared = false;
+    const { target, store } = await fixture(`async-${refusedStage}`, {
+      assertCurrent() {},
+      authorize(stage) {
+        return prepared && stage === refusedStage ? Promise.resolve() : undefined;
+      },
+    });
+    await expect(
+      store.putWidget(
+        {
+          ...target,
+          name: "app",
+          content: {
+            kind: "mcp-app",
+            interactive: true,
+            descriptor: {
+              serverName: "server",
+              toolName: "tool",
+              uiResourceUri: "ui://app",
+              toolCallId: "call",
+            },
+          },
+        },
+        {
+          async resolveMcpAppInteraction() {
+            prepared = true;
+            return true;
+          },
+        },
+      ),
+    ).rejects.toThrow("grants must remain synchronous");
+    prepared = false;
+    expect(await store.getSnapshot(target)).toMatchObject({ revision: 0, widgets: [] });
+  },
+);

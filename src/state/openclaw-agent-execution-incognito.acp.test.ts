@@ -58,15 +58,15 @@ afterAll(async () => {
 
 it("orders set, link and clear through both owners with zero caller-thread SQL", async () => {
   const readComposed = async ({
-    authority,
+    authority: boundAuthority,
     ...input
   }: Parameters<IncognitoAcpSessionAccess["readEntry"]>[0]) =>
-    (await readAcpSessionEntryAsync(input, { actor, authority }))?.entry;
+    (await readAcpSessionEntryAsync(input, { actor, authority: boundAuthority }))?.entry;
   const upsertComposed = ({
-    authority,
+    authority: boundAuthority,
     ...input
   }: Parameters<IncognitoAcpSessionAccess["upsertMeta"]>[0]) =>
-    upsertAcpSessionMeta(input, { actor, authority });
+    upsertAcpSessionMeta(input, { actor, authority: boundAuthority });
   const sessionKey = key("sequence");
   const target = { authority, cfg, env, sessionKey };
   await actor.sessions.create(authority, {
@@ -144,6 +144,29 @@ it("orders set, link and clear through both owners with zero caller-thread SQL",
     shared.mockRestore();
   }
 });
+
+it.each(["read", "write"] as const)(
+  "captures the ACP %s environment before deferred composition",
+  async (operation) => {
+    const sessionKey = key(`capture-${operation}`);
+    await actor.sessions.create(authority, { sessionKey, entry: entry(`capture-${operation}`) });
+    await actor.acp.upsertMeta({ authority, cfg, env, sessionKey, mutate: () => meta });
+    const requestEnv = { ...env };
+    const input = { cfg, env: requestEnv, sessionKey };
+    const updated = { ...meta, lastActivityAt: 300 };
+    const pending =
+      operation === "read"
+        ? readAcpSessionEntryAsync(input, { actor, authority }).then((value) => value?.acp)
+        : upsertAcpSessionMeta({ ...input, mutate: () => updated }, { actor, authority }).then(
+            (value) => value?.acp,
+          );
+    requestEnv.OPENCLAW_STATE_DIR = tempDirs.make("incognito-acp-redirect-");
+    expect(await pending).toEqual(operation === "read" ? meta : updated);
+    expect((await actor.acp.readEntry({ authority, cfg, env, sessionKey }))?.acp).toEqual(
+      operation === "read" ? meta : updated,
+    );
+  },
+);
 
 it.each(["snapshot", "policy"] as const)(
   "refuses changed %s before shared publication without replaying the mutator",

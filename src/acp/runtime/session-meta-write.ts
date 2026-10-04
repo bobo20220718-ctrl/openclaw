@@ -35,12 +35,17 @@ export async function upsertAcpSessionMeta(
     const { actor, authority } = incognito;
     actor.assertCurrent();
     authority.assertCurrent();
-    const input = { ...params };
+    const input = {
+      ...params,
+      expectedControlBinding:
+        params.expectedControlBinding && structuredClone(params.expectedControlBinding),
+    };
+    const context = captureAcpSessionReadContext({
+      ...input,
+      assertCurrent: input.assertCommitAllowed,
+    });
     return actor.sessions.withSharedState(async () => {
-      const captured = await captureAcpSessionReadContext({
-        ...input,
-        assertCurrent: input.assertCommitAllowed,
-      });
+      const captured = await context;
       const target = resolveSessionStorePathForAcp({ ...input, ...captured });
       if (target.agentId !== actor.agentId) {
         throw new Error("ACP mutation differs from its captured incognito actor");

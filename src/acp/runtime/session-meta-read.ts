@@ -39,8 +39,9 @@ export async function readAcpSessionEntryAsync(
   actor.assertCurrent();
   authority.assertCurrent();
   const input = { ...params };
+  const context = captureAcpSessionReadContext(input);
   return actor.sessions.withSharedState(async () => {
-    const captured = await captureAcpSessionReadContext(input);
+    const captured = await context;
     const target = resolveSessionStorePathForAcp({ ...input, ...captured });
     if (target.agentId !== actor.agentId) {
       throw new Error("ACP read differs from its captured incognito actor");

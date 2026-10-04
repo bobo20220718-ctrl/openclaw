@@ -309,6 +309,42 @@ it("forks the actor's checked transcript and preserves child lineage after delet
   }
 });
 
+it("captures the fork point before deferred composition", async () => {
+  const parent = await create("captured-fork-parent");
+  await append(parent, "completed answer");
+  const pendingUser = await actor.sessions.transcript(authority, {
+    type: "session.message.append",
+    input: {
+      sessionKey: parent.sessionKey,
+      sessionId: parent.entry.sessionId,
+      fence: { expectedLifecycleRevision: parent.entry.lifecycleRevision },
+      message: { role: "user", content: "pending question", timestamp: 10_001 },
+    },
+  });
+  assert(pendingUser.ok && pendingUser.value.append);
+  const input: Parameters<
+    typeof captureOpenClawAgentDatabaseExecution.forkIncognitoSessionFromParent
+  >[0] = {
+    source: actor,
+    destination: actor,
+    sourceAuthority: authority,
+    destinationAuthority: authority,
+    parent,
+    childSessionKey: "agent:main:dashboard:incognito-captured-fork-child",
+    supportsCliSessionFork: () => false,
+    async buildEntry() {
+      return { ...parent.entry, sessionId: "captured-fork-child" };
+    },
+  };
+  const pending = captureOpenClawAgentDatabaseExecution.forkIncognitoSessionFromParent(input);
+  input.forkFrom = "last-completed";
+  const fork = await pending;
+  assert(fork);
+  const next = await append({ sessionKey: input.childSessionKey, entry: fork }, "child answer");
+  assert(next.ok && next.value.append);
+  expect(next.value.append.effectiveParentId).toBe(pendingUser.value.append.messageId);
+});
+
 it("settles source preparation before a cross-agent fork and rechecks source lifetime after callbacks", async () => {
   const parent = await create("cross-parent");
   const last = await append(parent, "cross-agent answer");

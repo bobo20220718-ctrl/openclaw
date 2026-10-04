@@ -63,9 +63,9 @@ export async function repairCanonicalSessionGroup(
   }
 
   const destinationStore = byDatabase.get(destination.sqlitePath) ?? [];
-  const retainedTransfers = candidates.filter(
-    (candidate) => candidate.kind === "retained" && candidate.sqlitePath !== destination.sqlitePath,
-  );
+  const retainedTransfers = candidates
+    .filter((candidate) => candidate.kind === "retained")
+    .filter((candidate) => candidate.sqlitePath !== destination.sqlitePath);
   if (retainedTransfers.length > 0) {
     const { restoreSessionColdTranscript } =
       await import("../config/sessions/session-cold-storage.js");

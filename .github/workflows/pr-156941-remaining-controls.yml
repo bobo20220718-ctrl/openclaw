@@ -1,0 +1,280 @@
+# Task-only proof with pinned candidate and baseline identities.
+# This workflow creates proof artifacts; it cannot land or publish.
+name: PR 156941 remaining negative controls
+run-name: PR 156941 remaining negative controls
+
+on:
+  push:
+    branches: [test/pr-156941-remaining-controls]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-156941-remaining-controls
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CANDIDATE_SHA: 850cfd2b1dfb3fe9be0bd5d261761772ba3857c6
+  BASE_SHA: 5076c4156b7037b72f4e0eb910906f3569383685
+  CONTRIBUTOR_SHA: 17487454baa68c8901b1c9c84393135e93748a55
+  BEFORE_FIX_SHA: e9dd74b55fd92227b4da8d5ea8a248d0e7dca304
+  NODE_VERSION: "24.21.0"
+
+jobs:
+  proof:
+    if: github.ref == 'refs/heads/test/pr-156941-remaining-controls'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Validate immutable proof inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]
+          PROOF_DIR="$RUNNER_TEMP/pr-156941-proof"
+          printf 'PROOF_DIR=%s\n' "$PROOF_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$PROOF_DIR"
+
+      - name: Checkout exact candidate without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+
+      - name: Verify isolated checkout and fetch public comparison sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == os.environ['CANDIDATE_SHA']
+          secret_names = (
+              'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY',
+              'GH_TOKEN', 'GITHUB_TOKEN', 'NPM_TOKEN', 'NODE_AUTH_TOKEN',
+              'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+              'GOOGLE_APPLICATION_CREDENTIALS', 'SSH_AUTH_SOCK',
+          )
+          assert not any(os.environ.get(name) for name in secret_names), 'Unexpected task credential in proof environment'
+          credential_config = subprocess.run(
+              ['git', 'config', '--get-regexp', r'http\..*extraheader'],
+              text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+          )
+          assert credential_config.returncode == 1, 'Git authentication remained after checkout'
+          evidence = {key: os.environ[key] for key in ('CANDIDATE_SHA', 'BASE_SHA', 'CONTRIBUTOR_SHA', 'BEFORE_FIX_SHA')}
+          evidence['runner'] = os.environ['RUNNER_ENVIRONMENT']
+          evidence['negativeControlKind'] = 'source-derived pre-fix hunks on the exact candidate, not a full old-main run'
+          pathlib.Path(os.environ['PROOF_DIR'], 'identity.json').write_text(json.dumps(evidence, indent=2) + '\n')
+          PY
+          git -c core.hooksPath=/dev/null fetch --no-tags --depth=1 \
+            https://github.com/openclaw/openclaw.git "$BASE_SHA" "$CONTRIBUTOR_SHA" "$BEFORE_FIX_SHA"
+
+      - name: Setup maintained Node and pnpm toolchain
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.21.0"
+          install-bun: "false"
+          cache-mode: "off"
+          semantic-checks: "true"
+
+      - name: Verify unmodified positive owner tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/run-vitest.mjs \
+            src/gateway/session-access-authority.test.ts \
+            src/gateway/session-sharing.worker.test.ts \
+            src/gateway/session-utils-store-lookup.test.ts \
+            --maxWorkers=1 --reporter=default 2>&1 | tee "$PROOF_DIR/positive.log"
+          python3 - <<'PYCODE'
+          import os, pathlib, re
+          text = pathlib.Path(os.environ['PROOF_DIR'], 'positive.log').read_text()
+          assert not re.search(r'error during close|close timed out after|Unhandled (?:Error|Rejection|Exception)', text), 'Positive owner cleanup failed'
+          PYCODE
+
+      - name: Prove the restored pre-fix hunks fail at their intended assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess, time
+          import xml.etree.ElementTree as ET
+
+          root = pathlib.Path.cwd()
+          output = pathlib.Path(os.environ['PROOF_DIR'])
+          sql_file = 'src/gateway/server-methods/chat-send-admission.reads.test.ts'
+          sql_title = 'prepares and authorizes a first chat turn without caller-thread SQL'
+          sql_assertion = 'expect(sql.queries, sql.queries.join("\\n")).toEqual([]);'
+          join_file = 'src/gateway/server-methods/chat-send-profile-binding.test.ts'
+          join_title = 'retains callback custody after its real worker reader is revoked'
+
+          # Keep current-main codecs and worker contracts, restoring only the old
+          # owner behavior. Full old-main code is incompatible with the new tests.
+          load_file = 'src/gateway/server-methods/chat-send-session.ts'
+          load_old = '''    () =>
+                request.stopCommand
+                  ? loadSessionEntry(sessionLoadKey, sessionLoadOptions, runtimeConfig)
+                  : withGatewaySessionEntry(
+                      sessionLoadKey,
+                      sessionLoadOptions,
+                      (entry) => entry,
+                      runtimeConfig,
+                      assertConfigCurrent,
+                    ),'''
+          load_new = '    () => loadSessionEntry(sessionLoadKey, sessionLoadOptions, runtimeConfig),'
+          base_source = subprocess.check_output(['git', 'show', f"{os.environ['BASE_SHA']}:{load_file}"], text=True)
+          assert load_new in base_source, 'Pinned main did not use the claimed synchronous loader'
+
+          pre_file = 'src/gateway/server-methods/chat-send-pre-admission.ts'
+          pre_old = '  await consumeChatSendCurrent(params, () => {});\n  const retrySession = {'
+          pre_new = '  params.assertCurrent?.();\n  const retrySession = {'
+          pre_base = subprocess.check_output(['git', 'show', f"{os.environ['BASE_SHA']}:{pre_file}"], text=True)
+          assert pre_new in pre_base, 'Pinned main did not use the claimed synchronous post-claim authority check'
+
+          join_source = 'src/gateway/server-methods/chat-send-admission.ts'
+          join_old = '''    // Reader cleanup may reject after starting effects. Join them before releasing
+              // custody, preserving the original authority failure without replaying work.
+              if (startedWork) {
+                await Promise.allSettled([startedWork()]);
+              }
+              cleanupPreDispatchAdmission();
+              throw error;'''
+          join_new = '    cleanupPreDispatchAdmission();\n    throw error;'
+          original_source = subprocess.check_output(['git', 'show', f"{os.environ['CONTRIBUTOR_SHA']}:{join_source}"], text=True)
+          assert join_new in original_source, 'Original contributor source did not contain the unjoined cleanup'
+
+          reservation_title = 'clears a pending reservation when its retained reader is revoked after publication'
+          reservation_old = '''  const reserved = await consumeChatSendCurrent(params, reserve).catch((error: unknown) => {
+              pendingReservation.clear();
+              throw error;
+            });'''
+          reservation_new = '  const reserved = await consumeChatSendCurrent(params, reserve);'
+          # The contributor awaited the publication without cleanup. Keep the current
+          # helper spelling while restoring that same unguarded await, not the old API.
+          original_reservation = '''  const { goalReservationConflict, goalRetry, retrySettled } = params.withCurrent
+              ? await params.withCurrent(inspectRetryAndReserve)
+              : inspectRetryAndReserve();'''
+          assert original_reservation in original_source, 'Original contributor source did not contain the unguarded reservation await'
+
+          acp_old = '  // Explicit metadata, including misses, keeps this synchronous resolver off SQLite.\n  let deletedAgentId = resolveDeletedAgentIdFromSessionKey(cfg, sessionKey, entry, {\n    acpMeta: null,\n  });\n  if (deletedAgentId !== null) {\n    const [acpMeta] = await readAcpSessionMetaForEntries({\n      cfg,\n      entries: [{ agentId: deletedAgentId, sessionKey: legacyKey ?? sessionKey, entry }],\n    });\n    deletedAgentId = resolveDeletedAgentIdFromSessionKey(cfg, sessionKey, entry, {\n      acpMeta: acpMeta ?? null,\n    });\n  }'
+          acp_new = '  const deletedAgentId = resolveDeletedAgentIdFromSessionKey(cfg, sessionKey, entry, {\n    acpMetadataSessionKey: legacyKey ?? sessionKey,\n  });'
+          assert acp_new in base_source, 'Pinned main did not use the claimed synchronous ACP lookup'
+
+          receipt_file = 'src/gateway/server-methods/request-authorization.ts'
+          receipt_old = '          assertInvocationCurrent: params.assertInvocationCurrent,\n          assertPreparationCurrent,'
+          receipt_new = '          assertInvocationCurrent: assertPreparationCurrent,\n          assertPreparationCurrent,'
+          router_before = subprocess.check_output(['git', 'show', f"{os.environ['BEFORE_FIX_SHA']}:src/gateway/server-methods.ts"], text=True)
+          lost_receipt = '        assertInvocationCurrent: () => {\n          runtimeParticipant?.assertCurrent();\n          profileBinding?.assertCurrent();\n          assertOperatorCurrent();\n          requestMutationAuthority.assertPreparationCurrent();\n        },'
+          assert lost_receipt in router_before, 'Recorded candidate did not bind preparation as its invocation guard'
+
+          profile_file = 'src/gateway/session-sharing-authorization-async.ts'
+          profile_old = '        preparedProfiles,\n'
+          profile_new = ''
+          profile_before = subprocess.check_output(['git', 'show', f"{os.environ['BEFORE_FIX_SHA']}:{profile_file}"], text=True)
+          assert '        ...params,\n        preparedSharing: { ...read, assertCurrent },' in profile_before, 'Recorded candidate did not omit prepared profile facts'
+
+          row_file = 'src/sessions/session-row-facts.ts'
+          row_old = (root / row_file).read_text().split('): boolean {\n', 1)[1]
+          row_before = subprocess.check_output(['git', 'show', f"{os.environ['BEFORE_FIX_SHA']}:{row_file}"], text=True)
+          row_new = row_before.split('): boolean {\n', 1)[1]
+          assert 'Boolean(change.storePath)' in row_new and 'matchesStore' in row_old, 'Recorded cross-store invalidation boundary drifted'
+
+          controls = [
+              ('initial-sync-lookup', load_file, load_old, load_new, sql_file, sql_title, sql_assertion, 2),
+              ('sync-acp-lookup', load_file, acp_old, acp_new, sql_file, 'prepares canonical free ACP without caller-thread SQL', 'expect(sql.queries, sql.queries.join("\\n")).toHaveLength(0);', 1),
+              ('post-claim-sync-authority', pre_file, pre_old, pre_new, sql_file, sql_title, sql_assertion, 2),
+              ('unjoined-callback', join_source, join_old, join_new, join_file, join_title, 'expect(released).toBeDefined();', 1),
+              ('uncleared-reservation', join_source, reservation_old, reservation_new, join_file, reservation_title, 'expect(fixture.context.dedupe.has(pendingKey)).toBe(false);', 1),
+              ('lost-receipt-guard', receipt_file, receipt_old, receipt_new, 'src/gateway/session-access-authority.test.ts', 'fences receipt expiry without attaching it to retained actor or session lifetime', 'expect(loadSessionEntryReadOnly(scope)).toEqual(committed);', 1),
+              ('unprepared-profile-policy', profile_file, profile_old, profile_new, 'src/gateway/session-sharing.worker.test.ts', 'rechecks prepared unprepared-role policy at the next worker admission', 'expect(result.error, "prepared role authorization").toBeNull();', 1),
+              ('cross-store-invalidation', row_file, row_old, row_new, 'src/gateway/session-utils-store-lookup.test.ts', 'rows through non-row events but fences members, aliases and topology', 'expect(assertCurrent, "unrelated physical store publication").not.toThrow();', 2),
+          ]
+          controls = [control for control in controls if control[0] in {'lost-receipt-guard', 'unprepared-profile-policy', 'cross-store-invalidation'}]
+          assert len(controls) == 3
+          records = []
+          for label, source, before, after, test_file, title, assertion, expected_failures in controls:
+              path = root / source
+              original = path.read_bytes()
+              text = original.decode()
+              assert text.count(before) == 1, f'{label}: candidate hunk drifted; inspect before changing the control'
+              test_lines = (root / test_file).read_text().splitlines()
+              positions = [i + 1 for i, line in enumerate(test_lines) if line.strip() == assertion]
+              assert len(positions) == 1, f'{label}: expected assertion is not uniquely located'
+              assertion_line = positions[0]
+              report = output / f'{label}.xml'
+              env = dict(os.environ)
+              env['OPENCLAW_VITEST_FS_MODULE_CACHE_PATH'] = str(pathlib.Path(os.environ['RUNNER_TEMP']) / f'pr-156941-{label}-cache')
+              started = time.monotonic()
+              try:
+                  path.write_text(text.replace(before, after, 1))
+                  patch = subprocess.check_output(['git', 'diff', '--no-ext-diff', '--', source])
+                  (output / f'{label}.patch').write_bytes(patch)
+                  with (output / f'{label}.log').open('w') as log:
+                      result = subprocess.run([
+                          'node', 'scripts/run-vitest.mjs', test_file,
+                          '-t', title, '--maxWorkers=1', '--reporter=default', '--reporter=junit',
+                          f'--outputFile={report}',
+                      ], env=env, stdout=log, stderr=subprocess.STDOUT)
+                  assert result.returncode == 1, f'{label}: expected assertion failure, got exit {result.returncode}'
+                  # JUnit records suite-hook failures and unhandled errors separately.
+                  # JSON omits unhandled errors. Vitest reports global close errors later.
+                  log_text = (output / f'{label}.log').read_text()
+                  assert not re.search(r'error during close|close timed out after', log_text), f'{label}: Vitest teardown failed'
+                  data = ET.parse(report).getroot()
+                  assert data.tag == 'testsuites', f'{label}: unexpected JUnit report'
+                  assert int(data.attrib['errors']) == 0 and not data.findall('.//error'), f'{label}: unhandled error is not regression proof'
+                  suites = data.findall('testsuite')
+                  assert suites and all(int(suite.attrib['errors']) == 0 for suite in suites), f'{label}: suite error is not regression proof'
+                  failed = [case for case in data.iter('testcase') if case.findall('failure')]
+                  assert len(failed) == expected_failures, f'{label}: unexpected failing-test count'
+                  assert int(data.attrib['failures']) == expected_failures, f'{label}: unexpected suite failure'
+                  assert len(data.findall('.//failure')) == expected_failures, f'{label}: extra failure message is not regression proof'
+                  for case in failed:
+                      assert title in case.attrib['name'], f'{label}: unrelated test failed'
+                      assert case.find('skipped') is None, f'{label}: expected failing case was skipped'
+                      failures = case.findall('failure')
+                      assert len(failures) == 1, f'{label}: test has multiple errors'
+                      for failure in failures:
+                          assert failure.attrib['type'] == 'AssertionError', f'{label}: failure had the wrong type'
+                          detail = failure.attrib['message'] + '\n' + ''.join(failure.itertext())
+                          # The public reporter treats SESSION-bearing filenames as credential
+                          # keys and redacts their :line:column suffix. Bind the exact case and
+                          # source assertion above, then require its distinct failure evidence.
+                          frame = re.escape(pathlib.Path(test_file).name) + ':'
+                          assert re.search(frame + r'(?:' + str(assertion_line) + r'(?::|\b)|<redacted len=\d+>)', detail), f'{label}: expected owner frame missing'
+                          if label == 'lost-receipt-guard':
+                              assert re.search(r'(?m)^-\s+"label": "allowed invocation write",?$', detail), 'Receipt control did not compare the last allowed commit'
+                              assert re.search(r'(?m)^\+\s+"label": "expired invocation write",?$', detail), 'Receipt control did not expose the forbidden expired commit'
+                          elif label == 'unprepared-profile-policy':
+                              assert 'prepared role authorization' in detail, 'Prepared policy assertion identity missing'
+                          elif label == 'cross-store-invalidation':
+                              assert 'unrelated physical store publication' in detail, 'Physical-store assertion identity missing'
+                          else:
+                              raise AssertionError('Unexpected control')
+                          if test_file == sql_file:
+                              assert re.search(r'\b(?:SELECT|PRAGMA|INSERT|CREATE)\b', detail, re.I), f'{label}: SQL evidence missing'
+                  records.append({'control': label, 'source': source, 'test': test_file, 'assertionLine': assertion_line, 'failedTests': [case.attrib['name'] for case in failed], 'wallSeconds': round(time.monotonic() - started, 3)})
+              finally:
+                  path.write_bytes(original)
+                  subprocess.run(['git', 'diff', '--exit-code', '--', source], check=True)
+                  (output / 'negative-controls.json').write_text(json.dumps(records, indent=2) + '\n')
+          PY
+
+      - name: Verify restored candidate source
+        shell: bash
+        run: git diff --exit-code -- src test
+
+      - name: Upload task proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr-156941-remaining-controls-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr-156941-proof/
+          if-no-files-found: error
+          retention-days: 7

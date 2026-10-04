@@ -29,42 +29,45 @@ type AcpSessionMutationParams = Parameters<typeof upsertAcpSessionMetaNative>[0]
 /** File-backed writes retain their read source through both canonical storage owners. */
 export async function upsertAcpSessionMeta(
   params: AcpSessionMutationParams,
-  incognito?: { actor: IncognitoAgentDatabaseExecution; authority: IncognitoSessionAuthority },
 ): Promise<SessionEntry | null> {
-  if (incognito) {
-    const { actor, authority } = incognito;
-    actor.assertCurrent();
-    authority.assertCurrent();
-    const input = {
-      ...params,
-      expectedControlBinding:
-        params.expectedControlBinding && structuredClone(params.expectedControlBinding),
-    };
-    const context = captureAcpSessionReadContext({
-      ...input,
-      assertCurrent: input.assertCommitAllowed,
-    });
-    return actor.sessions.withSharedState(async () => {
-      const captured = await context;
-      const target = resolveSessionStorePathForAcp({ ...input, ...captured });
-      if (target.agentId !== actor.agentId) {
-        throw new Error("ACP mutation differs from its captured incognito actor");
-      }
-      return actor.acp.upsertMeta({
-        ...input,
-        ...captured,
-        sessionKey: target.storeSessionKey,
-        authority: {
-          assertCurrent() {
-            captured.assertCurrent();
-            authority.assertCurrent();
-          },
-          authorize: (stage, facts) => authority.authorize?.(stage, facts),
-        },
-      });
-    });
-  }
   return mutateAcpSessionMeta(params);
+}
+
+export async function upsertAcpSessionMetaInIncognitoActor(
+  params: AcpSessionMutationParams,
+  incognito: { actor: IncognitoAgentDatabaseExecution; authority: IncognitoSessionAuthority },
+): Promise<SessionEntry | null> {
+  const { actor, authority } = incognito;
+  actor.assertCurrent();
+  authority.assertCurrent();
+  const input = {
+    ...params,
+    expectedControlBinding:
+      params.expectedControlBinding && structuredClone(params.expectedControlBinding),
+  };
+  const context = captureAcpSessionReadContext({
+    ...input,
+    assertCurrent: input.assertCommitAllowed,
+  });
+  return actor.sessions.withSharedState(async () => {
+    const captured = await context;
+    const target = resolveSessionStorePathForAcp({ ...input, ...captured });
+    if (target.agentId !== actor.agentId) {
+      throw new Error("ACP mutation differs from its captured incognito actor");
+    }
+    return actor.acp.upsertMeta({
+      ...input,
+      ...captured,
+      sessionKey: target.storeSessionKey,
+      authority: {
+        assertCurrent() {
+          captured.assertCurrent();
+          authority.assertCurrent();
+        },
+        authorize: (stage, facts) => authority.authorize?.(stage, facts),
+      },
+    });
+  });
 }
 
 /** Private control updates cannot recreate metadata that disappeared after preparation. */

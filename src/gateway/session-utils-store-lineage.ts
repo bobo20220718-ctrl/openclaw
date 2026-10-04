@@ -3,10 +3,10 @@ import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 import { selectStoredSessionLineage } from "./session-store-key.js";
+import type { GatewaySessionStoreDiscoveryCache } from "./session-utils-store-candidates.js";
 import {
   readGatewayStoredSessionEntry,
   resolveGatewaySessionStoreTargetWithStore,
-  type GatewaySessionStoreDiscoveryCache,
 } from "./session-utils-store-lookup.js";
 import { readGatewaySessionStore } from "./session-utils-store-read.js";
 

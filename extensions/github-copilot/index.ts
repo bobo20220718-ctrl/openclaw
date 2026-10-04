@@ -45,6 +45,19 @@ const COPILOT_ENV_VAR = "COPILOT_GITHUB_TOKEN";
 const DEFAULT_COPILOT_PROFILE_ID = "github-copilot:github";
 const COPILOT_SECRET_STORE_NAME_PREFIX = "GITHUB_COPILOT_TOKEN";
 
+function buildCopilotTokenProfile(
+  ctx: ProviderAuthContext,
+  token: string,
+): ProviderAuthResult["profiles"][number] {
+  return {
+    profileId: DEFAULT_COPILOT_PROFILE_ID,
+    credential: { type: "token", provider: PROVIDER_ID, token },
+    ...(ctx.secretInputMode === "plaintext"
+      ? {}
+      : { secretStorage: { kind: "store", namePrefix: COPILOT_SECRET_STORE_NAME_PREFIX } }),
+  };
+}
+
 async function loadGithubCopilotRuntime() {
   return await import("./register.runtime.js");
 }
@@ -403,17 +416,7 @@ export default definePluginEntry({
           : undefined;
       if (suppliedToken) {
         return {
-          profiles: [
-            {
-              profileId: DEFAULT_COPILOT_PROFILE_ID,
-              credential: { type: "token", provider: PROVIDER_ID, token: suppliedToken },
-              ...(ctx.secretInputMode === "plaintext"
-                ? {}
-                : {
-                    secretStorage: { kind: "store", namePrefix: COPILOT_SECRET_STORE_NAME_PREFIX },
-                  }),
-            },
-          ],
+          profiles: [buildCopilotTokenProfile(ctx, suppliedToken)],
           ...(!ctx.credentialOnly ? { defaultModel: DEFAULT_COPILOT_MODEL } : {}),
           ...(configPatch ? { configPatch } : {}),
         };
@@ -431,6 +434,8 @@ export default definePluginEntry({
           initialValue: false,
         });
         if (!runLogin) {
+          ctx.signal?.throwIfAborted();
+          ctx.assertCurrent?.();
           const { profileId, credential } = existing;
           const resolved = await resolveRequiredConfiguredSecretRefInputString({
             config: ctx.config,
@@ -438,6 +443,8 @@ export default definePluginEntry({
             value: credential.tokenRef,
             path: `providers.github-copilot.authProfiles.${profileId}.tokenRef`,
           });
+          ctx.signal?.throwIfAborted();
+          ctx.assertCurrent?.();
           const starter = await resolveInteractiveCopilotStarterModel({
             ctx,
             githubToken: (resolved ?? credential.token ?? "").trim(),
@@ -535,24 +542,7 @@ export default definePluginEntry({
           : []),
       ];
       return {
-        profiles: [
-          {
-            profileId: DEFAULT_COPILOT_PROFILE_ID,
-            credential: {
-              type: "token" as const,
-              provider: PROVIDER_ID,
-              token: result.accessToken,
-            },
-            ...(!persistInline
-              ? {
-                  secretStorage: {
-                    kind: "store" as const,
-                    namePrefix: COPILOT_SECRET_STORE_NAME_PREFIX,
-                  },
-                }
-              : {}),
-          },
-        ],
+        profiles: [buildCopilotTokenProfile(ctx, result.accessToken)],
         ...(starter.defaultModel ? { defaultModel: starter.defaultModel } : {}),
         ...(notes.length > 0 ? { notes } : {}),
         ...(configPatch ? { configPatch } : {}),
@@ -631,7 +621,7 @@ export default definePluginEntry({
       buildAuthDoctorHint: buildGithubCopilotAuthDoctorHint,
       wrapStreamFn: wrapCopilotProviderStream,
       buildReplayPolicy: buildGithubCopilotReplayPolicy,
-      sanitizeReplayHistory: sanitizeGithubCopilotReplayHistory,
+      sanitizeReplayHistoryAsync: sanitizeGithubCopilotReplayHistory,
       resolveThinkingProfile,
       prepareRuntimeAuth: async (ctx) => {
         const source = parseGithubCopilotApiKey(ctx.apiKey);

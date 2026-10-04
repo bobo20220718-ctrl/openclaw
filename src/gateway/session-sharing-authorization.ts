@@ -17,10 +17,8 @@ import {
   type SessionSharingTarget,
 } from "./session-sharing-policy.js";
 import type { SessionMutationTarget } from "./session-sharing-target-input.js";
-import type {
-  GatewaySessionStoreCache,
-  GatewaySessionStoreDiscoveryCache,
-} from "./session-utils-store-lookup.js";
+import type { GatewaySessionStoreDiscoveryCache } from "./session-utils-store-candidates.js";
+import type { GatewaySessionStoreCache } from "./session-utils-store-lookup.js";
 import type { GatewaySessionStoreTarget } from "./session-utils-store.types.js";
 
 export type SessionMutationAuthorizationParams = {
@@ -41,7 +39,7 @@ export type AuthorizedSessionMutationTarget = SessionMutationTarget & {
   sessionId: string | null;
   lifecycleRevision?: string;
   created?: true;
-  absentTarget?: GatewaySessionStoreTarget;
+  absentTarget?: Pick<GatewaySessionStoreTarget, "agentId" | "canonicalKey" | "storePath">;
   projection?: import("./session-row-projection.js").SessionRowProjection;
 };
 
@@ -54,6 +52,7 @@ export type ExpectedSessionMutationTarget = Readonly<{
 
 export type PreparedMutationSharing = {
   target: SessionSharingTarget | null;
+  storageTarget: Pick<GatewaySessionStoreTarget, "agentId" | "canonicalKey" | "storePath">;
   members: readonly import("../config/sessions/session-sharing-store.kernel.js").SessionMember[];
   assertCurrent: () => void;
 };
@@ -67,6 +66,8 @@ export function createSessionSharingLookupCaches(): SessionSharingLookupCaches {
   return { storeCache: new Map(), targetDiscoveryCache: new Map() };
 }
 
+// docs/gateway/protocol.md gives these handlers visibility-based authorization.
+// The router still prevents view/suggest-capped callers from reassigning foreign sessions.
 export const VISIBILITY_AUTHORIZED_METHODS = new Set(["sessions.assignOwner"]);
 
 export function resolveOwnSessionProfileAuthorization(params: {
@@ -124,7 +125,7 @@ export function prepareAuthorizedSessionMutationFacts(params: {
     readSource?: import("../config/sessions/session-entry-read-source.types.js").CapturedSessionEntryReadSource;
   };
   targetChanged: () => Error;
-}): SessionSharingTarget | null {
+}): Pick<PreparedMutationSharing, "target" | "storageTarget"> {
   const { expected, facts } = params;
   const original = expected.resolved;
   const expectedRoute = original
@@ -159,18 +160,27 @@ export function prepareAuthorizedSessionMutationFacts(params: {
   ) {
     throw params.targetChanged();
   }
-  return facts.entry
-    ? {
-        ...(original ?? {
-          agentId: expectedRoute.agentId,
-          canonicalKey: expectedRoute.sessionKey,
-          storeKey: expectedRoute.sessionKey,
-          storePath: expectedRoute.storePath,
-        }),
-        storeKeys: [expectedRoute.storeKey],
-        entry: facts.entry,
-      }
-    : null;
+  // Qualified worker reads use agent store keys. Preserve the validated logical
+  // route so a global request does not acquire a different session identity.
+  return {
+    storageTarget: {
+      agentId: expectedRoute.agentId,
+      canonicalKey: expectedRoute.sessionKey,
+      storePath: expectedRoute.storePath,
+    },
+    target: facts.entry
+      ? {
+          ...(original ?? {
+            agentId: expectedRoute.agentId,
+            canonicalKey: expectedRoute.sessionKey,
+            storeKey: expectedRoute.sessionKey,
+            storePath: expectedRoute.storePath,
+          }),
+          storeKeys: [expectedRoute.storeKey],
+          entry: facts.entry,
+        }
+      : null,
+  };
 }
 
 export function assertSessionMutationProjectionCurrent(

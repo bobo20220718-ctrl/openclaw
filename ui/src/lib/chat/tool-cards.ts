@@ -11,6 +11,7 @@ import {
   readNonBlankString,
 } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { unwrapToolCallForDisplay } from "../../../../src/agents/tool-display-call.js";
 import {
   extractCanvasFromDetails,
   extractCanvasFromText,
@@ -151,7 +152,9 @@ export function resolveToolCardOutcome(
       case "running":
         return runActive === true && card.live === true ? "running" : "unknown";
       default:
-        return "unknown";
+        return runActive === true && card.live === true && card.completed !== true
+          ? "running"
+          : "unknown";
     }
   }
   if (isToolCardError(card)) {
@@ -166,11 +169,8 @@ export function resolveToolCardOutcome(
   return "unknown";
 }
 
-export function extractToolPreview(
-  outputText: string | undefined,
-  toolName: string | undefined,
-): CanvasToolPreview | undefined {
-  const preview = extractCanvasFromText(outputText, toolName);
+export function extractToolPreview(outputText: string | undefined): CanvasToolPreview | undefined {
+  const preview = extractCanvasFromText(outputText);
   return preview?.surface === "assistant_message"
     ? { ...preview, surface: "assistant_message" }
     : undefined;
@@ -186,7 +186,7 @@ function extractToolPresentation(
   const canvas =
     preview?.surface === "assistant_message"
       ? { ...preview, surface: "assistant_message" }
-      : extractToolPreview(text, name);
+      : extractToolPreview(text);
   if (canvas) {
     return { preview: { ...canvas, surface: "assistant_message" } };
   }
@@ -244,6 +244,12 @@ function serializeToolInput(args: unknown): string | undefined {
   } catch {
     return typeof args === "bigint" ? String(args) : Object.prototype.toString.call(args);
   }
+}
+
+/** Rendering only: extraction and result retrieval retain the original card. */
+export function resolveToolCardDisplay(card: ToolCard): ToolCard {
+  const call = unwrapToolCallForDisplay(card);
+  return call === card ? card : { ...card, ...call, inputText: serializeToolInput(call.args) };
 }
 
 export function formatCollapsedToolSummaryText(value: string | undefined): string | undefined {

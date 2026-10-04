@@ -7,14 +7,12 @@ import type { GatewayRequestContext, RespondFn } from "./types.js";
 export function createAdmittedChatSendCleanup(params: {
   cleanupAbort: () => void;
   releaseRetainedWork: () => void;
-  releaseGatewayRoot: () => void;
 }) {
   let discardPreparedMedia: (() => void) | undefined;
   return {
     cleanup: () => {
       params.cleanupAbort();
       params.releaseRetainedWork();
-      params.releaseGatewayRoot();
       discardPreparedMedia?.();
       discardPreparedMedia = undefined;
     },

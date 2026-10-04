@@ -239,37 +239,52 @@ describe("model chat and native model ownership", () => {
     expect(fixture.generation.resolveDynamicModel).not.toHaveBeenCalled();
   });
 
-  it("retries one benign session-row race before native model dispatch", async () => {
-    const nativeOwner = vi.fn(() => ({ model: "native" as const, auth: "native" as const }));
-    const fixture = await createFixture({}, nativeOwner);
-    const run = historyLane.pool.run.bind(historyLane.pool);
-    let changed = false;
-    const spy = vi.spyOn(historyLane.pool, "run").mockImplementation(async (...args) => {
-      const reply = await run(...args);
-      if (
-        !changed &&
-        reply.ok &&
-        typeof reply.value === "object" &&
-        !Array.isArray(reply.value) &&
-        reply.value.kind === "session-exact-entries"
-      ) {
-        changed = true;
-        sessionChanges.emit({
-          sessionKey: fixture.target.sessionKey,
-          storePath: fixture.target.storePath,
+  it.each(["row-publication", "caller-revoked"] as const)(
+    "rechecks native ownership after a worker read with %s",
+    async (race) => {
+      const nativeOwner = vi.fn(() => ({ model: "native" as const, auth: "native" as const }));
+      const fixture = await createFixture({}, nativeOwner);
+      const run = historyLane.pool.run.bind(historyLane.pool);
+      const revoked = new Error("Native model setup authority revoked");
+      let changed = false;
+      const spy = vi.spyOn(historyLane.pool, "run").mockImplementation(async (...args) => {
+        const reply = await run(...args);
+        if (
+          !changed &&
+          reply.ok &&
+          typeof reply.value === "object" &&
+          !Array.isArray(reply.value) &&
+          reply.value.kind === "session-exact-entries"
+        ) {
+          changed = true;
+          if (race === "row-publication") {
+            sessionChanges.emit({
+              sessionKey: fixture.target.sessionKey,
+              storePath: fixture.target.storePath,
+            });
+          }
+        }
+        return reply;
+      });
+      try {
+        const setup = fixture.resolve(() => {
+          if (changed && race === "caller-revoked") {
+            throw revoked;
+          }
         });
+        if (race === "caller-revoked") {
+          await expect(setup).rejects.toBe(revoked);
+          expect(nativeOwner).not.toHaveBeenCalled();
+        } else {
+          expect((await setup).nativeModelOwned).toBe(true);
+          expect(nativeOwner).toHaveBeenCalledOnce();
+        }
+        expect(changed).toBe(true);
+      } finally {
+        spy.mockRestore();
       }
-      return reply;
-    });
-    try {
-      const setup = await fixture.resolve();
-      expect(setup.nativeModelOwned).toBe(true);
-      expect(changed).toBe(true);
-      expect(nativeOwner).toHaveBeenCalledOnce();
-    } finally {
-      spy.mockRestore();
-    }
-  });
+    },
+  );
 
   it.each(["current", "changed-again", "revoked"] as const)(
     "reacquires initial model preparation after a shared OAuth refresh while authority is %s",

@@ -142,7 +142,6 @@ function deliverAnnouncement(
   return deliverSubagentAnnouncement({
     targetRequesterSessionKey: params.requesterSessionKey,
     triggerMessage: "child done",
-    steerMessage: "child done",
     requesterIsSubagent: false,
     expectsCompletionMessage: true,
     ...params,
@@ -208,7 +207,6 @@ describe("queued completion handoff", () => {
         requesterSessionKey: "agent:main:subagent:parent",
         requesterIsSubagent: true,
         triggerMessage: "Child result ready",
-        steerMessage: "Child result ready",
         directIdempotencyKey: "busy-parent-completion",
         ...(outcome === "private"
           ? { completionTarget: "parent" as const, completionRequesterSessionId: "busy-parent" }
@@ -592,7 +590,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
   const sharedStore = "/stores/shared.sqlite";
   const configuredAgents: NonNullable<OpenClawConfig["agents"]> = {
     ownership: "explicit",
-    list: [{ id: "ops" }, { id: "research" }],
+    entries: { ops: {}, research: {} },
   };
   function announce(overrides: Partial<AnnouncementInput> = {}) {
     const requesterSessionKey = overrides.requesterSessionKey ?? "agent:eng:paperclip:issue:123";
@@ -658,25 +656,16 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
     ],
   ])("%s", async (_name, sessionKey, sessionId, requesterAgentId, cfg) => {
     const persisted = sessionKey === "incident-42";
-    const getRequesterSessionActivity = vi.fn((_sessionKey: string, agentId?: string) => ({
+    const loadSessionEntry = vi.fn(({ agentId }: { agentId?: string }) => ({
       sessionId: persisted || agentId === "research" ? sessionId : "ops-session",
-      isActive: true,
+      updatedAt: 1,
     }));
-    const loadSessionEntry = vi.fn(() => ({ sessionId, updatedAt: 1 }));
     const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
     testing.setDepsForTest({
       getRuntimeConfig: () => cfg,
-      getRequesterSessionActivity,
+      loadSessionEntry,
+      isEmbeddedAgentRunActive: () => true,
       queueEmbeddedAgentMessageWithOutcome,
-      ...(persisted
-        ? { loadSessionEntry }
-        : {
-            loadRequesterSessionEntry: (key: string) => ({
-              cfg,
-              entry: undefined,
-              canonicalKey: key,
-            }),
-          }),
     });
     const result = await announce({ requesterSessionKey: sessionKey, requesterAgentId });
     expectDeliveryPath(result, "steered");
@@ -685,7 +674,6 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
         expect.objectContaining({ agentId: "ops", sessionKey: "incident-42" }),
       );
     }
-    expect(getRequesterSessionActivity).toHaveBeenCalledWith(sessionKey, requesterAgentId ?? "ops");
     expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenCalledWith(
       sessionId,
       "child done",
@@ -1168,7 +1156,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         session: { scope: "global" },
         agents: {
           ownership: "explicit",
-          list: [{ id: "ops" }, { id: "research" }],
+          entries: { ops: {}, research: {} },
         },
       },
       internalEvents: taskCompletionEvents({ childSessionId: "child-session-id" }),
@@ -1694,18 +1682,18 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     });
     expect(callGateway).toHaveBeenCalledTimes(1);
     expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenCalledTimes(2);
-    for (const attempt of [1, 2]) {
-      expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenNthCalledWith(
-        attempt,
-        "requester-session-4",
-        "child done",
-        expect.objectContaining({
-          debounceMs: 500,
-          deliveryTimeoutMs: 120_000,
-          steeringMode: "all",
-          waitForTranscriptCommit: true,
-          userTurnTranscriptRecorder: expect.any(Object),
-        }),
+    const calls = queueEmbeddedAgentMessageWithOutcome.mock.calls;
+    expect(calls.map(([session, prompt]) => [session, prompt])).toEqual([
+      ["requester-session-4", "Continue the OpenClaw runtime event."],
+      ["requester-session-4", "Continue the OpenClaw runtime event."],
+    ]);
+    for (const call of calls) {
+      expect(call[2]).toMatchObject({
+        waitForTranscriptCommit: true,
+        userTurnTranscriptRecorder: expect.any(Object),
+      });
+      expect(call[2]?.currentInboundContext?.fragments).toContainEqual(
+        expect.objectContaining({ kind: "runtime-instruction" }),
       );
     }
     expect(callOrder).toEqual(["queue", "gateway", "queue"]);
@@ -1811,7 +1799,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       expect(rawMessages).toEqual([
         expect.objectContaining({
           role: "user",
-          content: "child done",
+          content: "Continue the OpenClaw runtime event.",
           provenance: expect.objectContaining({
             kind: "inter_session",
             sourceTool: "subagent_announce",
@@ -2091,7 +2079,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       requesterSessionKey: "agent:worker:subagent:parent",
       targetRequesterSessionKey: "agent:worker:subagent:parent",
       triggerMessage: "child done",
-      steerMessage: "child done",
       requesterIsSubagent: true,
       expectsCompletionMessage: true,
       bestEffortDeliver: true,
@@ -2960,7 +2947,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       requesterSessionKey: route.sessionKey,
       targetRequesterSessionKey: route.sessionKey,
       triggerMessage: "all spawned subagents settled",
-      steerMessage: "all spawned subagents settled",
       requesterSessionOrigin: route.origin,
       directOrigin: route.origin,
       requesterIsSubagent: route.requesterIsSubagent,
@@ -2980,9 +2966,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(queueEmbeddedAgentMessageWithOutcome).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
     const agentParams = expectGatewayAgentParams(callGateway, route.agentParams);
-    expect(agentParams.sourceReplyDeliveryMode).toBe(
-      requireVisibleReply && route.agentParams.deliver ? "automatic" : undefined,
-    );
+    expect(agentParams.sourceReplyDeliveryMode).toBeUndefined();
   });
 
   const adapterUnavailable = new PlatformMessageNotDispatchedError(

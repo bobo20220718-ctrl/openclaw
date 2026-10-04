@@ -1,4 +1,4 @@
-import type { SessionRowChange } from "./session-row-changes.js";
+import { isSessionStoreTopologyChange, type SessionRowChange } from "./session-row-changes.js";
 
 /** Stored rows have their own publication fence; display/runtime and auth refreshes do not replace them. */
 export function sessionChangeAffectsStoredRow(
@@ -10,7 +10,7 @@ export function sessionChangeAffectsStoredRow(
   },
 ): boolean {
   if ("all" in change) {
-    if (change.scope === "stores" && target.ignoreStoreTopology) {
+    if (target.ignoreStoreTopology && isSessionStoreTopologyChange(change)) {
       return false;
     }
     if (typeof change.scope === "string") {
@@ -24,6 +24,8 @@ export function sessionChangeAffectsStoredRow(
         "worker-placements",
         "worker-environments",
         "config",
+        "config-presentation",
+        "config-profiles",
         "runtime",
         "automation",
       ].includes(change.scope);

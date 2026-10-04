@@ -19,10 +19,11 @@ import { withQualifiedGatewaySessionEntry } from "./session-utils-store.js";
 
 it.each([
   { kind: "qualified", agentId: "main" },
+  { kind: "alias", agentId: "main" },
   { kind: "global", agentId: "main" },
   { kind: "global", agentId: "work" },
 ])(
-  "admits qualified worker facts for an authorized missing $agentId $kind session",
+  "admits missing $agentId $kind session authority without caller-thread SQL",
   async ({ kind, agentId }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       let cfg = rolePolicyConfig();
@@ -36,27 +37,28 @@ it.each([
       const client = roleClient("write", "new-session-owner");
       const scope = {
         agentId,
-        sessionKey: kind === "global" ? "global" : "agent:main:new-worker-session",
+        sessionKey: kind === "qualified" ? "agent:main:new-worker-session" : "global",
       };
-      const result = await resolveSessionMutationAuthorizationAsync({
-        client,
-        method: "chat.send",
-        requestParams: scope,
-        context: { getRuntimeConfig: () => cfg } as GatewayRequestContext,
-      });
-      expect(result.error).toBeNull();
       const route = resolveGatewaySessionStoreTarget({
         cfg,
-        key: scope.sessionKey,
+        key: kind === "alias" ? "agent:main:main" : scope.sessionKey,
         agentId: scope.agentId,
       });
       const qualified = prepareQualifiedSessionEntryTarget({
         ...route,
-        requestedKey: scope.sessionKey,
+        requestedKey: kind === "alias" ? route.canonicalKey : scope.sessionKey,
         storeKey: route.canonicalKey,
       });
       const effect = vi.fn();
+      const host = observeHostDataSql();
       try {
+        const result = await resolveSessionMutationAuthorizationAsync({
+          client,
+          method: "chat.send",
+          requestParams: scope,
+          context: { getRuntimeConfig: () => cfg } as GatewayRequestContext,
+        });
+        expect(result.error).toBeNull();
         await withQualifiedGatewaySessionEntry({
           cfg,
           target: qualified.target,
@@ -94,13 +96,17 @@ it.each([
                 }
                 cfg = { ...cfg, logging: { level: "debug" } };
                 result.authorization!.assertCurrent();
+                result.authorization!.assertTargetCurrent(scope);
                 effect();
               },
               assertSourceCurrent,
             ),
         });
+        await result.authorization!.withCurrent!(() => result.authorization!.assertCurrent());
         expect(effect).toHaveBeenCalledOnce();
+        expect(host.queries).toEqual([]);
       } finally {
+        host.restore();
         qualified.release();
       }
     });
@@ -154,6 +160,40 @@ it("allows unrelated config reloads while worker authorization reads are pending
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+it("does not replay an authorization consumer after its own effect changes the row", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const cfg = rolePolicyConfig();
+    const client = roleClient("write", "consumer-owner");
+    const scope = { agentId: "main", sessionKey: "agent:main:consumer-settlement" };
+    const entry = {
+      sessionId: "consumer-session",
+      updatedAt: 1,
+      createdActor: {
+        type: "human" as const,
+        source: "profile" as const,
+        id: client.authenticatedUserProfile!.profileId,
+      },
+    };
+    replaceSessionEntrySync(scope, entry);
+    const result = await resolveSessionMutationAuthorizationAsync({
+      client,
+      method: "chat.send",
+      requestParams: scope,
+      context: { getRuntimeConfig: () => cfg } as GatewayRequestContext,
+    });
+    expect(result.error).toBeNull();
+    const effect = vi.fn();
+    await expect(
+      result.authorization!.withCurrent!(() => {
+        effect();
+        replaceSessionEntrySync(scope, { ...entry, updatedAt: effect.mock.calls.length + 1 });
+        result.authorization!.assertCurrent();
+      }),
+    ).rejects.toThrow("Session sharing facts changed during read");
+    expect(effect).toHaveBeenCalledOnce();
   });
 });
 

@@ -17,7 +17,7 @@ import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.
 import { buildMockOpenAiResponsesProvider } from "./test-openai-responses-model.js";
 
 it(
-  "carries current membership through transcript persistence and agent dispatch",
+  "carries current membership and explicit global ownership through transcript persistence and agent dispatch",
   { timeout: 90_000 },
   async () => {
     const state = await createOpenClawTestState({
@@ -37,6 +37,7 @@ it(
     });
     const requests: string[] = [];
     const providerErrors: unknown[] = [];
+    let providerReply = "Authorized member reply.";
     const providerServer = createServer((request, response) => {
       void (async () => {
         const chunks: Buffer[] = [];
@@ -45,7 +46,7 @@ it(
         }
         requests.push(Buffer.concat(chunks).toString("utf8"));
         writeOpenAiResponsesText(response, {
-          text: "Authorized member reply.",
+          text: providerReply,
           messageId: `msg_${randomUUID()}`,
           responseId: `resp_${randomUUID()}`,
         });
@@ -83,6 +84,8 @@ it(
       };
       const cfg = {
         agents: {
+          ownership: "explicit",
+          entries: { main: {}, work: {} },
           defaults: {
             workspace: state.workspaceDir,
             skipBootstrap: true,
@@ -96,6 +99,7 @@ it(
             },
           },
         },
+        session: { scope: "global" },
         models: {
           mode: "replace",
           providers: {
@@ -189,7 +193,6 @@ it(
         const resumeRead = createDeferredCore();
         const read = historyLane.pool.run.bind(historyLane.pool);
         let held = false;
-        let matchingAuthorizationReads = 0;
         const workerRead = vi
           .spyOn(historyLane.pool, "run")
           .mockImplementation(async (prepare, options) => {
@@ -206,9 +209,6 @@ it(
                 input.includeAuthorization === true &&
                 input.sessionKeys.length === 1 &&
                 input.sessionKeys[0] === sessionKey;
-              if (matchesDeniedAuthorization) {
-                matchingAuthorizationReads += 1;
-              }
               return input;
             }, options);
             if (!held && matchesDeniedAuthorization) {
@@ -225,7 +225,14 @@ it(
           idempotencyKey: randomUUID(),
         });
         try {
-          await readCaptured.promise;
+          await Promise.race([
+            readCaptured.promise,
+            denied.then(() => {
+              throw new Error("chat.send completed before its authorization read was held");
+            }),
+          ]);
+          expect(requests).toHaveLength(1);
+          expect(await loadTranscriptEvents(scope)).toEqual(transcriptBeforeDeniedTurn);
           if (change === "membership revoked") {
             await removeSessionMember(scope, memberProfileId);
           } else {
@@ -240,12 +247,10 @@ it(
           await expect(denied).rejects.toMatchObject({ code: "INVALID_REQUEST" });
         } finally {
           resumeRead.resolve();
+          await Promise.allSettled([denied]);
           workerRead.mockRestore();
         }
         expect(held).toBe(true);
-        // The denied request performs its captured read, observes revocation, then takes the
-        // single bounded fresh-read retry before rejecting.
-        expect(matchingAuthorizationReads).toBe(2);
         expect(await loadTranscriptEvents(scope)).toEqual(transcriptBeforeDeniedTurn);
         if (change === "session replaced") {
           expect(
@@ -267,6 +272,105 @@ it(
       expect(await loadTranscriptEvents(scope)).toEqual(transcriptBeforeDeniedTurn);
       expect(requests).toHaveLength(1);
       expect(providerErrors).toEqual([]);
+
+      // Match the seeded QA matrix with one assembled Gateway and provider. Reset through
+      // the public lifecycle owner between cells so each starts with empty owner histories.
+      let resetGlobalSessions = false;
+      for (const [first, second] of [
+        ["main", "work"],
+        ["work", "main"],
+      ] as const) {
+        for (const withAttachment of [false, true]) {
+          if (resetGlobalSessions) {
+            for (const agentId of [first, second]) {
+              await gateway.client.request("sessions.reset", { key: "global", agentId });
+              await expect(
+                gateway.client.request("chat.history", { sessionKey: "global", agentId }),
+              ).resolves.toMatchObject({ messages: [] });
+            }
+          }
+          resetGlobalSessions = true;
+          const markers = {
+            main: `GLOBAL_MAIN_${randomUUID()}`,
+            work: `GLOBAL_WORK_${randomUUID()}`,
+          };
+          const sessionIds = new Map<string, string>();
+          for (const method of ["chat.send", "agent"] as const) {
+            for (const agentId of [first, second]) {
+              const otherAgentId = agentId === "main" ? "work" : "main";
+              const message = `${markers[agentId]}_${method}: preserve this owner's global chat.`;
+              providerReply = `${markers[agentId]}_${method}_REPLY`;
+              const attachmentText = `${markers[agentId]} attachment`;
+              const attachments =
+                withAttachment && method === "chat.send"
+                  ? [
+                      {
+                        fileName: `${agentId}-notes.txt`,
+                        mimeType: "text/plain",
+                        content: Buffer.from(attachmentText).toString("base64"),
+                      },
+                    ]
+                  : undefined;
+              const requestOffset = requests.length;
+              const started = await gateway.client.request<{ runId: string; status: string }>(
+                method,
+                {
+                  sessionKey: "global",
+                  agentId,
+                  message,
+                  deliver: false,
+                  idempotencyKey: randomUUID(),
+                  attachments,
+                },
+              );
+              expect(started.status).toBe(method === "chat.send" ? "started" : "accepted");
+              await expect(
+                gateway.client.request<{ status: string }>(
+                  "agent.wait",
+                  { runId: started.runId, timeoutMs: 30_000 },
+                  { timeoutMs: 35_000 },
+                ),
+              ).resolves.toMatchObject({ status: "ok" });
+              const providerInput = requests.slice(requestOffset).join("\n");
+              expect(providerInput).toContain(message);
+              expect(providerInput).not.toContain(markers[otherAgentId]);
+              if (attachments) {
+                expect(providerInput).toContain(attachmentText);
+              }
+              const history = await gateway.client.request<{
+                sessionKey: string;
+                sessionId: string;
+                messages: unknown[];
+              }>("chat.history", { sessionKey: "global", agentId, limit: 20 });
+              expect(history.sessionKey).toBe("global");
+              expect(history.sessionId).toEqual(expect.any(String));
+              if (method === "agent") {
+                expect(history.sessionId).toBe(sessionIds.get(agentId));
+                expect(providerInput).toContain(`${markers[agentId]}_chat.send_REPLY`);
+              }
+              sessionIds.set(agentId, history.sessionId);
+              expect(new Set(sessionIds.values()).size).toBe(sessionIds.size);
+              const transcript = await loadTranscriptEvents({
+                agentId,
+                sessionKey: "global",
+                sessionId: history.sessionId,
+              });
+              for (const persisted of [history.messages, transcript]) {
+                const text = JSON.stringify(persisted);
+                expect(text).toContain(message);
+                expect(text).toContain(providerReply);
+                expect(text).not.toContain(markers[otherAgentId]);
+              }
+              const otherHistory = await gateway.client.request<{ messages: unknown[] }>(
+                "chat.history",
+                { sessionKey: "global", agentId: otherAgentId, limit: 20 },
+              );
+              expect(JSON.stringify(otherHistory.messages)).not.toContain(markers[agentId]);
+              expect(providerErrors).toEqual([]);
+            }
+          }
+        }
+      }
     } finally {
       try {
         if (gateway) {

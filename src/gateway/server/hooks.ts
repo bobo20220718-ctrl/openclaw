@@ -236,6 +236,24 @@ export function createGatewayHookDispatcher(params: {
     fenceScheduledGatewayContextResolver(resolveGatewayContext);
   const runScheduledHook = createScheduledGatewayRunner(scheduledGatewayContextResolver);
   const enqueueHookAgentDispatch = createSessionKeyedHookDispatchQueue();
+  const announcedFailureReplays = new Map<string, number>();
+  const claimFailureNotice = (replayKey: string | undefined) => {
+    if (!replayKey) {
+      return true;
+    }
+    const now = Date.now();
+    for (const [key, announcedAt] of announcedFailureReplays) {
+      if (announcedAt < now - DEDUPE_TTL_MS) {
+        announcedFailureReplays.delete(key);
+      }
+    }
+    if (announcedFailureReplays.has(replayKey)) {
+      return false;
+    }
+    announcedFailureReplays.set(replayKey, now);
+    pruneMapToMaxSize(announcedFailureReplays, DEDUPE_MAX);
+    return true;
+  };
   let isolatedAgentModulePromise:
     | Promise<typeof import("../../cron/isolated-agent.js")>
     | undefined;
@@ -373,6 +391,9 @@ export function createGatewayHookDispatcher(params: {
       status: string,
       reason: string,
     ) => {
+      if (status !== "ok" && !claimFailureNotice(value.replayKey)) {
+        return;
+      }
       const eventSessionKey = eventTarget.eventSessionKey;
       const isGlobalEvent = isUnscopedSessionKeySentinel(eventSessionKey);
       let heartbeatTarget = eventTarget.heartbeatTarget;
@@ -454,6 +475,9 @@ export function createGatewayHookDispatcher(params: {
         clearTimeout(admissionTimer);
         admissionTimer = undefined;
       }
+      if (result.ok && value.replayKey) {
+        announcedFailureReplays.delete(value.replayKey);
+      }
       admission.resolve(result);
     };
     const failAdmission = (err: unknown) => {
@@ -530,6 +554,7 @@ export function createGatewayHookDispatcher(params: {
                 cfg,
                 deps,
                 job,
+                deliveryAttemptFence: null,
                 message: acceptedValue.message,
                 sessionKey,
                 // Isolated runs derive their lifecycle key from random jobId (or an

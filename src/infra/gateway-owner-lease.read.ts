@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import { readOpenClawStateLease } from "../state/openclaw-state-lease-store.js";
@@ -43,15 +44,10 @@ export function readGatewayOwnerLeaseFromDatabase(
     return undefined;
   }
   const processOwner = parseStateLeaseProcessOwner(row.payloadJson);
-  let payload: unknown;
-  try {
-    payload = row.payloadJson ? JSON.parse(row.payloadJson) : null;
-  } catch {
-    payload = null;
-  }
+  const payload = safeParseJsonRecord(row.payloadJson ?? "");
   if (
     !processOwner ||
-    !isRecord(payload) ||
+    !payload ||
     typeof payload.port !== "number" ||
     !Number.isInteger(payload.port) ||
     payload.port <= 0 ||
@@ -70,11 +66,12 @@ export function readGatewayOwnerLeaseFromDatabase(
   return {
     ...processOwner,
     owner: row.owner,
+    heartbeatAt: row.heartbeatAt ?? row.createdAt,
     port: payload.port,
     mode: payload.mode,
     supervisor,
     // Expiry cannot revoke the separate physical Gateway coordinator.
-    state: readStateLeaseProcessOwnerStatus(processOwner),
+    state: readStateLeaseProcessOwnerStatus(processOwner, row.heartbeatAt ?? row.createdAt),
     expired: row.expiresAt === null || row.expiresAt <= Date.now(),
   };
 }

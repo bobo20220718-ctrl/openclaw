@@ -42,17 +42,16 @@ import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.j
 import { isAcpSessionKey } from "../sessions/session-key-utils.js";
 import { dedupeByKey } from "../shared/dedupe-by-key.js";
 import { listAgentProvenance } from "../state/agent-provenance.js";
-import { AgentDatabaseRegistryChangedError } from "../state/openclaw-agent-db-registry-listing.js";
 import { listGatewayAgentsBasic } from "./agent-list.js";
 import type { GatewayAgentOwnership } from "./agent-list.js";
 import { resolveGatewayAssistantAvatar } from "./assistant-avatar.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "./session-request-agent.js";
 import { captureSessionMutationRouting } from "./session-sharing-preparation.js";
 import { resolveGatewayModelThinkingProfile } from "./session-utils-model.js";
+import type { GatewaySessionStoreDiscoveryCache } from "./session-utils-store-candidates.js";
 import { GatewaySessionFactsChangedDuringReadError } from "./session-utils-store-errors.js";
 import {
   withGatewaySessionStoreTarget,
-  type GatewaySessionStoreDiscoveryCache,
   resolveGatewaySessionStoreTarget,
   resolveGatewaySessionStoreTargetWithStore,
 } from "./session-utils-store-lookup.js";
@@ -234,43 +233,32 @@ export async function withGatewaySessionEntry<T>(
 ): Promise<T> {
   const assertRoutingCurrent = captureSessionMutationRouting(cfg);
   const assertConfig = assertConfigCurrent ?? (() => assertRoutingCurrent(getRuntimeConfig()));
-  const read = () =>
-    withGatewaySessionStoreTarget(
-      { cfg, key: sessionKey, ...opts },
-      (target, membership, assertSourceCurrent) => {
-        for (const key of target.storeKeys) {
-          if (isInternalSessionEffectsKey(key)) {
-            delete target.store[key];
-          }
+  return withGatewaySessionStoreTarget(
+    { cfg, key: sessionKey, ...opts },
+    (target, membership, assertSourceCurrent) => {
+      for (const key of target.storeKeys) {
+        if (isInternalSessionEffectsKey(key)) {
+          delete target.store[key];
         }
-        const canonicalMatch = findCanonicalStoreMatch(target.store, target.storeKeys);
-        return consume(
-          {
-            cfg,
-            ...target,
-            entry: canonicalMatch?.entry,
-            legacyKey:
-              canonicalMatch?.key !== target.canonicalKey ? canonicalMatch?.key : undefined,
-          },
-          membership,
-          () => {
-            assertSourceCurrent();
-            assertConfig();
-          },
-        );
-      },
-    );
-  // One registration invalidates discovery at both begin and commit publication.
-  // Admit a fresh read after each bounded transition, never retry other failures.
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await read();
-    } catch (error) {
-      if (!(error instanceof AgentDatabaseRegistryChangedError) || attempt >= 2) {
-        throw error;
       }
-    }
-  }
+      const canonicalMatch = findCanonicalStoreMatch(target.store, target.storeKeys);
+      const assertCurrent = () => {
+        assertSourceCurrent();
+        assertConfig();
+      };
+      assertCurrent();
+      return consume(
+        {
+          cfg,
+          ...target,
+          entry: canonicalMatch?.entry,
+          legacyKey: canonicalMatch?.key !== target.canonicalKey ? canonicalMatch?.key : undefined,
+        },
+        membership,
+        assertCurrent,
+      );
+    },
+  );
 }
 
 export async function withQualifiedGatewaySessionEntry<T>(params: {
@@ -282,11 +270,18 @@ export async function withQualifiedGatewaySessionEntry<T>(params: {
   consume: Parameters<typeof withGatewaySessionEntry<T>>[2];
   assertConfigCurrent: () => void;
 }): Promise<T> {
+  let consumed = false;
   const read = () =>
     withQualifiedGatewaySessionStoreTarget({
       ...params,
       consume: (target, membership, assertSourceCurrent) => {
         const canonicalMatch = findCanonicalStoreMatch(target.store, target.storeKeys);
+        const assertCurrent = () => {
+          assertSourceCurrent();
+          params.assertConfigCurrent();
+        };
+        assertCurrent();
+        consumed = true;
         return params.consume(
           {
             cfg: params.cfg,
@@ -296,19 +291,20 @@ export async function withQualifiedGatewaySessionEntry<T>(params: {
               canonicalMatch?.key !== target.canonicalKey ? canonicalMatch?.key : undefined,
           },
           membership,
-          () => {
-            assertSourceCurrent();
-            params.assertConfigCurrent();
-          },
+          assertCurrent,
         );
       },
     });
-  // Reopen the same qualified source after bounded stored-row publications.
+  // Refresh only before consumption; a callback may already have started effects.
   for (let attempt = 0; ; attempt += 1) {
     try {
       return await read();
     } catch (error) {
-      if (!(error instanceof GatewaySessionFactsChangedDuringReadError) || attempt >= 2) {
+      if (
+        consumed ||
+        !(error instanceof GatewaySessionFactsChangedDuringReadError) ||
+        attempt >= 2
+      ) {
         throw error;
       }
     }

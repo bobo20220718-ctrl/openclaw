@@ -61,6 +61,8 @@ import {
 } from "./session-sharing-read.js";
 import {
   readSessionSharingStringParam,
+  resolveChatSendAuthorizationParams,
+  resolveChatSendAuthorizationTarget,
   resolveDirectIncognitoTargets,
   resolveDirectSessionTargets,
   resolveSessionMutationTargets,
@@ -106,6 +108,16 @@ export function resolveSessionMutationAuthorization(params: SessionMutationAutho
   authorization?: SessionMutationAuthorization;
   error: ErrorShape | null;
 } {
+  if (params.method === "chat.send") {
+    const normalized = resolveChatSendAuthorizationParams(
+      params.context.getRuntimeConfig(),
+      params.requestParams,
+    );
+    if (!normalized.ok) {
+      return { error: normalized.error };
+    }
+    params = { ...params, requestParams: normalized.value };
+  }
   const authorizesAgentRun = isAgentRunStartMethod(params.method, params.requestParams);
   const authorizesRead =
     resolveSessionMethodScope(params.method, params.requestParams) === "operator.sessions.read";
@@ -372,11 +384,13 @@ export function resolveSessionMutationAuthorization(params: SessionMutationAutho
       sessionId: target?.entry.sessionId?.trim() || null,
       ...(!target && ["chat.send", "sessions.send", "sessions.create"].includes(params.method)
         ? {
-            absentTarget: resolveGatewaySessionStoreTarget({
-              cfg: getCfg(),
-              key: targetRef.sessionKey,
-              agentId: targetRef.agentId,
-            }),
+            absentTarget: consumingSharing
+              ? consumingSharing.storageTarget
+              : resolveGatewaySessionStoreTarget({
+                  cfg: getCfg(),
+                  key: targetRef.sessionKey,
+                  agentId: targetRef.agentId,
+                }),
           }
         : {}),
       ...(bindsProgressLifecycle || bindsOwnProfile
@@ -449,11 +463,13 @@ export function resolveSessionMutationAuthorization(params: SessionMutationAutho
         ensuredSessionId?: string,
       ) => {
         if (expected?.absentTarget && !expected.created) {
-          const currentRoute = resolveGatewaySessionStoreTarget({
-            cfg: currentCfg,
-            key: targetRef.sessionKey,
-            agentId: targetRef.agentId,
-          });
+          const currentRoute = consumingSharing
+            ? consumingSharing.storageTarget
+            : resolveGatewaySessionStoreTarget({
+                cfg: currentCfg,
+                key: targetRef.sessionKey,
+                agentId: targetRef.agentId,
+              });
           // Absence is bound to its original store too. Checking the creation
           // notification would discover a redirected write only after COMMIT.
           if (
@@ -607,7 +623,8 @@ export function resolveSessionMutationAuthorization(params: SessionMutationAutho
                 assertSourceCurrent: () => void,
               ): T => {
                 const expected = authorizedTargets[0]!;
-                const target = prepareAuthorizedSessionMutationFacts({
+                assertSourceCurrent();
+                const prepared = prepareAuthorizedSessionMutationFacts({
                   expected,
                   facts,
                   targetChanged: () => targetChanged(expected.sessionKey),
@@ -618,7 +635,7 @@ export function resolveSessionMutationAuthorization(params: SessionMutationAutho
                 );
                 return consumeSharing(
                   {
-                    target,
+                    ...prepared,
                     members: facts.members,
                     assertCurrent: () => {
                       assertSourceCurrent();
@@ -704,11 +721,23 @@ export function resolveSessionMutationAuthorization(params: SessionMutationAutho
           // Resolve the same normalized identity so padded aliases cannot escape the snapshot fence.
           const sessionKey = normalizeOptionalString(targetRef.sessionKey);
           const agentId = normalizeOptionalString(targetRef.agentId);
-          const normalizedTarget = { sessionKey: sessionKey ?? targetRef.sessionKey, agentId };
-          const expected = authorizedTargets.find(
-            (target) => target.sessionKey === sessionKey && target.agentId === agentId,
-          );
+          let normalizedTarget: SessionMutationTarget = {
+            sessionKey: sessionKey ?? targetRef.sessionKey,
+            agentId,
+          };
           const currentCfg = params.context.getRuntimeConfig();
+          if (params.method === "chat.send") {
+            const normalized = resolveChatSendAuthorizationTarget(currentCfg, normalizedTarget);
+            if (!normalized.ok) {
+              throw new SessionMutationAuthorizationChangedError(normalized.error);
+            }
+            normalizedTarget = normalized.value;
+          }
+          const expected = authorizedTargets.find(
+            (target) =>
+              target.sessionKey === normalizedTarget.sessionKey &&
+              target.agentId === normalizedTarget.agentId,
+          );
           assertTalkTargetCurrent(currentCfg);
           assertTargetCurrent(
             normalizedTarget,

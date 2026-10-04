@@ -22,6 +22,13 @@ working directory. Their process callbacks and idle queue tail must not retain
 the first read's async context. Each read keeps its own admission, cancellation,
 and deadline scope until settlement; completed operation promises are released.
 
+Snapshot staging owners and native-source completion promises use the same
+lifecycle context. Staging preparations keep their individual authority until
+cleanup completes. Shared-state opening releases its caller admission callback
+after native settlement; reusable writer slots retain prepared launch facts
+instead of the opening caller's options. These changes preserve FIFO admission,
+joins of pending opens, schemas, stored bytes, configuration, and update behavior.
+
 Inventory classifications describe counted operations, not whole-module runtime
 safety. Reviewed mixed modules use named operation paths, optionally narrowed to
 a variable initializer, rather than line numbers. Initializer exceptions exclude
@@ -419,9 +426,22 @@ entry, and stays quiesced through settlement. Separate shared-state and agent re
 prevent a binding deletion receipt from publishing a successful session deletion.
 Unknown outcomes block reuse of that native generation and never replay the write.
 Initialization facts and ACP finalizers become eligible only after acknowledged agent
-COMMIT. Opaque released SDK callbacks, incognito, and message-cut transactions retain
-their native routes. The existing cross-database crash window, schemas, retention,
-and update behavior are unchanged; no migration is required.
+COMMIT. Opaque released SDK callbacks and incognito retain their native routes.
+The existing cross-database crash window, schemas, retention, and update behavior
+are unchanged; no migration is required.
+
+Durable rewind and branch switching run their complete scan, graph clone, index,
+collaboration cleanup, and entry rotation in that same agent executor. Preparation
+retains the original physical source, selected lifecycle, cold restoration, and
+native generation. The worker rereads the source and applies model-lock and branch
+predicates before the native binding veto and agent COMMIT. Reversible participants
+reuse the binding settlement owner; a confirmed rollback restores the removed row
+conditionally, while unknown outcomes block that generation without replay.
+Acknowledged receipts invalidate branch summaries and publish entry and identity
+facts before native subscription cleanup. Accepted work settles before Gateway
+close retires the database transports. Existing fork paths keep their current
+owners; opaque SDK callbacks retain their synchronous transaction visibility.
+There is no schema, retention, durability, configuration, or update migration.
 
 Channel setup awaits a fresh policy read after the agent-selection prompt.
 Deferred plugin migration rows are read by the shared-state worker, and setup
@@ -739,6 +759,18 @@ their native paths, so their shared SQL sites remain T1. No schema, retention,
 durability, or update migration changes.
 
 ## Carry facts, publish after commit
+
+Device join-code registration and redemption use the existing device-pairing
+worker and FIFO. The setup RPC captures its physical store and requester authority
+before preparing the setup payload; public HTTP redemption captures the store
+before waiting for its rate-limit turn. Transaction and commit grants recheck
+those captured owners. Selection and deletion remain one synchronous transaction,
+and malformed payloads are decoded only after the burn is acknowledged. Expiry is
+rechecked before disclosing an acknowledged result. Unknown
+outcomes never replay a burn. HTTP response shapes, no-store caching, expiry,
+throttling, schemas, and update behavior are unchanged.
+Join operations acknowledge their own result without scanning or republishing
+unrelated paired-device records.
 
 Durable progress-card replacements and conditional clears use a narrow adapter
 on the canonical agent writer. The host captures the session, physical store, and

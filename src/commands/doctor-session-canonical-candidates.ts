@@ -3,8 +3,9 @@ import { listAgentIds } from "../agents/agent-scope-config.js";
 import { resolveAgentMainSessionKey } from "../config/sessions/main-session.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
-  listCanonicalSessionRepairFacts,
+  readCanonicalSessionRepairInventory,
   type CanonicalSessionRepairFact,
+  type CanonicalSessionRepairInventory,
 } from "../config/sessions/session-accessor.js";
 import { preserveCreationStamp } from "../config/sessions/session-entry-provenance.js";
 import { resolveDeliveryProvenCanonicalSessionKey } from "../config/sessions/store-entry.js";
@@ -71,6 +72,11 @@ type CanonicalSessionRepairGroup = {
   removedRows: number;
 };
 
+type CanonicalSessionStoreInventory = {
+  target: ExistingAgentDatabaseTarget;
+  inventory: CanonicalSessionRepairInventory;
+};
+
 export function listCanonicalSessionStores(params: {
   cfg: OpenClawConfig;
   env: NodeJS.ProcessEnv;
@@ -84,7 +90,7 @@ export function listCanonicalSessionStores(params: {
 
 function collectCanonicalSessionCandidateFacts(
   params: { cfg: OpenClawConfig; env: NodeJS.ProcessEnv },
-  stores: readonly ExistingAgentDatabaseTarget[],
+  inventories: readonly CanonicalSessionStoreInventory[],
 ): CanonicalSessionCandidateFact[] {
   const defaultAgentRemoved = !listAgentIds(params.cfg).includes(DEFAULT_AGENT_ID);
   const mainKey = normalizeMainKey(params.cfg.session?.mainKey);
@@ -104,11 +110,8 @@ function collectCanonicalSessionCandidateFacts(
       preserveQualifiedAddress: !repairLegacyMainHead,
     });
   };
-  const inventory = stores.flatMap((target) =>
-    listCanonicalSessionRepairFacts({
-      agentId: target.agentId,
-      storePath: target.storePath,
-    }).map((inventoryFact) => {
+  const inventory = inventories.flatMap(({ target, inventory }) =>
+    inventory.facts.map((inventoryFact) => {
       const { canonicalOwnerSessionKey, sessionKey } = inventoryFact;
       const storedKey = resolveStoredKey(target.agentId, sessionKey);
       return {
@@ -239,11 +242,25 @@ function groupRepairCandidates(
   });
 }
 
-export function collectCanonicalSessionRepairGroups(
+export function collectCanonicalSessionRepairs(
   params: { cfg: OpenClawConfig; env: NodeJS.ProcessEnv },
   stores: readonly ExistingAgentDatabaseTarget[],
-): CanonicalSessionRepairGroup[] {
-  return groupRepairCandidates(collectCanonicalSessionCandidateFacts(params, stores), params);
+): { groups: CanonicalSessionRepairGroup[]; inventories: CanonicalSessionStoreInventory[] } {
+  const inventories = stores.map((target) => ({
+    target,
+    inventory: readCanonicalSessionRepairInventory({
+      agentId: target.agentId,
+      storePath: target.storePath,
+      env: params.env,
+    }),
+  }));
+  return {
+    groups: groupRepairCandidates(
+      collectCanonicalSessionCandidateFacts(params, inventories),
+      params,
+    ),
+    inventories,
+  };
 }
 
 function mergeCanonicalSessionEntryCandidates<T>(

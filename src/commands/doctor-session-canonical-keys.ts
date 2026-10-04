@@ -15,10 +15,14 @@ import {
   assertExistingDatabaseIdentity,
   readDatabasePathIdentitySync,
 } from "../infra/sqlite-worker-identity.js";
-import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import { ensureSessionEntryValidityProjection } from "../state/openclaw-agent-db-session-migrations.js";
+import {
+  openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction,
+} from "../state/openclaw-agent-db.js";
 import { backupDoctorSqliteDatabases } from "./doctor-migration-backup.js";
 import {
-  collectCanonicalSessionRepairGroups,
+  collectCanonicalSessionRepairs,
   listCanonicalSessionStores,
   selectCanonicalSessionCandidate,
   type CanonicalSessionCandidate,
@@ -237,8 +241,15 @@ export async function repairCanonicalSessionKeys(params: {
   const archivedTranscriptDirectories = new Set<string>();
   let repairBatches = 0;
   let repairedGroups = 0;
-  let repairGroups = collectCanonicalSessionRepairGroups({ cfg: params.cfg, env }, stores);
-  if (params.apply && repairGroups.length > 0 && !params.authority) {
+  const inventory = collectCanonicalSessionRepairs({ cfg: params.cfg, env }, stores);
+  let repairGroups = inventory.groups;
+  const pendingPaths = new Set([
+    ...repairGroups.flatMap((group) => group.candidates.map((candidate) => candidate.sqlitePath)),
+    ...inventory.inventories
+      .filter(({ inventory }) => inventory.pendingAdmission)
+      .map(({ target }) => target.sqlitePath),
+  ]);
+  if (params.apply && pendingPaths.size > 0 && !params.authority) {
     return await withDoctorSqliteMaintenanceLock({
       env,
       operation: "canonical session-key repair",
@@ -246,9 +257,10 @@ export async function repairCanonicalSessionKeys(params: {
     });
   }
   const identities = params.apply
-    ? stores.map((target) => ({
+    ? inventory.inventories.map(({ target, inventory }) => ({
         target,
         identity: readDatabasePathIdentitySync(target.sqlitePath),
+        pendingAdmission: inventory.pendingAdmission,
       }))
     : [];
   const assertCurrent = () => {
@@ -257,47 +269,79 @@ export async function repairCanonicalSessionKeys(params: {
       assertExistingDatabaseIdentity(target.sqlitePath, identity.key, identity.birthtime);
     }
   };
-  if (params.apply && repairGroups.length > 0) {
+  if (params.apply && pendingPaths.size > 0) {
     assertCurrent();
-    const factsByPath = new Map(
-      stores.map((target) => [
+    const inventoriesByPath = new Map(
+      inventory.inventories.map(({ target, inventory }) => [
         fs.realpathSync(target.sqlitePath),
-        repairGroups
-          .flatMap((group) => group.candidates)
-          .filter((candidate) => candidate.sqlitePath === target.sqlitePath)
-          .map((candidate) => candidate.inventoryFact),
+        inventory,
       ]),
     );
     const backup = await backupDoctorSqliteDatabases({
       env,
-      pendingDatabasePaths: [...factsByPath]
-        .filter(([, facts]) => facts.length > 0)
-        .map(([pathname]) => pathname),
+      pendingDatabasePaths: [...pendingPaths],
       databasePaths: stores.map((target) => target.sqlitePath),
       authority: { assertCurrent },
       repair: {
         key: `canonical-session-keys-${randomUUID()}`,
         validate: (database, sourcePath) => {
-          const facts = factsByPath.get(sourcePath);
-          if (facts?.length) {
-            loadCanonicalRepairEntriesFromDatabase({ db: database }, facts);
+          const expected = inventoriesByPath.get(sourcePath);
+          if (expected) {
+            loadCanonicalRepairEntriesFromDatabase(
+              { db: database },
+              expected.facts,
+              expected.inventoryToken,
+            );
           }
         },
       },
     });
     assertCurrent();
+    // Keep the backed-up inventory current before admission changes derived entry validity.
+    for (const store of stores) {
+      const expected = inventoriesByPath.get(fs.realpathSync(store.sqlitePath));
+      if (expected) {
+        loadCanonicalSessionRepairEntries(
+          { agentId: store.agentId, storePath: store.storePath, env },
+          expected.facts,
+          expected.inventoryToken,
+        );
+      }
+    }
     note(
       [...backup.changes, ...backup.warnings].map((message) => `- ${message}`).join("\n"),
       "Session SQLite backups",
     );
   }
   if (params.apply) {
-    for (const store of stores) {
-      setCanonicalSqliteSessionMainKey(
-        openOpenClawAgentDatabase(resolveTargetSqliteOptions(store, env)),
-        params.cfg.session?.mainKey,
-      );
+    for (const { target, identity, pendingAdmission } of identities) {
+      const options = resolveTargetSqliteOptions(target, env);
+      // Cached handles still need the admission owner's pending validity repair.
+      const database = pendingAdmission
+        ? runOpenClawAgentWriteTransaction(
+            (database) => {
+              assertCurrent();
+              ensureSessionEntryValidityProjection(database.db);
+              return database;
+            },
+            options,
+            {
+              operationLabel: "doctor.canonical-session-validity",
+              repairAdmission: { assertCurrent, expectedIdentity: identity },
+            },
+          )
+        : openOpenClawAgentDatabase(options);
+      setCanonicalSqliteSessionMainKey(database, params.cfg.session?.mainKey);
     }
+    // Writable admission settles pending entry validity, so plan from its committed projection.
+    const admitted = collectCanonicalSessionRepairs({ cfg: params.cfg, env }, stores);
+    if (
+      admitted.inventories.some(({ inventory }) => inventory.pendingAdmission) ||
+      (admitted.groups.length > 0 && (!params.authority || pendingPaths.size === 0))
+    ) {
+      throw new Error("Canonical session repair inputs changed during admission; rerun Doctor");
+    }
+    repairGroups = admitted.groups;
   }
   const foundGroups = repairGroups.length;
   const removedRows = repairGroups.reduce((total, group) => total + group.removedRows, 0);
@@ -331,7 +375,7 @@ export async function repairCanonicalSessionKeys(params: {
         }
         repairBatches += 1;
         repairedGroups += 1;
-        repairGroups = collectCanonicalSessionRepairGroups({ cfg: params.cfg, env }, stores);
+        repairGroups = collectCanonicalSessionRepairs({ cfg: params.cfg, env }, stores).groups;
         continue;
       }
       const batch = [singleDatabaseGroup];
@@ -360,7 +404,7 @@ export async function repairCanonicalSessionKeys(params: {
       }
       repairBatches += 1;
       repairedGroups += batch.length;
-      repairGroups = collectCanonicalSessionRepairGroups({ cfg: params.cfg, env }, stores);
+      repairGroups = collectCanonicalSessionRepairs({ cfg: params.cfg, env }, stores).groups;
     }
   }
   return {

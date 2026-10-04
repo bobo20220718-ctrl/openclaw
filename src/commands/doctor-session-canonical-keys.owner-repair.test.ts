@@ -14,6 +14,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { openNodeSqliteDatabase, resolveImmutableSqliteFileUri } from "../infra/node-sqlite.js";
 import { FIRST_USE_ADDITIVE_AGENT_COLUMN_DEFINITIONS } from "../state/openclaw-agent-db-additive-columns.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
@@ -50,6 +51,86 @@ function insertEmptyAlias(params: {
 }
 
 describe("doctor transcript owner repair", () => {
+  it.each(["held", "reopened"])(
+    "backs up pending empty owners through %s admission",
+    async (handle) => {
+      await withStateDirEnv("openclaw-doctor-pending-retained-", async ({ stateDir }) => {
+        const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+        const storePath = resolveSessionStorePathCore(undefined, { agentId: "main", env });
+        const cfg: OpenClawConfig = {
+          agents: { ownership: "explicit", entries: { main: {} } },
+        };
+        const database = insertEmptyAlias({
+          agentId: "main",
+          env,
+          storePath,
+          sessionKey: "retained",
+          sessionId: "pending-retained",
+          updatedAt: 20,
+        });
+        database.db
+          .prepare(
+            "INSERT INTO session_windows (session_id, session_key, reason, session_scope, created_at, updated_at) VALUES (?, ?, 'initial', 'conversation', 20, 20)",
+          )
+          .run("pending-retained", "retained");
+        const nodesBefore = database.db.prepare("SELECT * FROM session_nodes").all();
+        const windowsBefore = database.db.prepare("SELECT * FROM session_windows").all();
+        expect(nodesBefore).toHaveLength(1);
+        expect(nodesBefore[0]).toMatchObject({ entry_json: "{}", entry_valid: 0 });
+        if (handle === "reopened") {
+          await closeOpenClawAgentDatabasesAsync(stateDir);
+          closeOpenClawAgentDatabasesForTest();
+        }
+
+        expect(await repairCanonicalSessionKeys({ apply: false, cfg, env })).toMatchObject({
+          foundGroups: 0,
+          repairedGroups: 0,
+        });
+        expect(await repairCanonicalSessionKeys({ apply: true, cfg, env })).toMatchObject({
+          foundGroups: 1,
+          repairedGroups: 1,
+        });
+        expect(
+          loadExactSessionEntryReadOnly({
+            agentId: "main",
+            env,
+            storePath,
+            sessionKey: "agent:main:retained",
+          }),
+        ).toBeUndefined();
+        const repaired = openOpenClawAgentDatabase({ agentId: "main", env, path: database.path });
+        expect(repaired.db.prepare("SELECT * FROM session_nodes").all()).toEqual(
+          nodesBefore.map((node) => ({
+            ...node,
+            session_key: "agent:main:retained",
+            entry_valid: -1,
+          })),
+        );
+        expect(repaired.db.prepare("SELECT * FROM session_windows").all()).toEqual(
+          windowsBefore.map((window) => ({ ...window, session_key: "agent:main:retained" })),
+        );
+        const backups = fs
+          .readdirSync(path.dirname(database.path))
+          .filter(
+            (name) =>
+              name.startsWith(`${path.basename(database.path)}.pre-startup-migration-`) &&
+              name.endsWith(".bak"),
+          );
+        expect(backups).toHaveLength(1);
+        const backup = openNodeSqliteDatabase(
+          resolveImmutableSqliteFileUri(path.join(path.dirname(database.path), backups[0]!)),
+          { readOnly: true },
+        );
+        try {
+          expect(backup.prepare("SELECT * FROM session_nodes").all()).toEqual(nodesBefore);
+          expect(backup.prepare("SELECT * FROM session_windows").all()).toEqual(windowsBefore);
+        } finally {
+          backup.close();
+        }
+      });
+    },
+  );
+
   it("canonicalizes retained placeholders without reviving entries or replacing a live owner", async () => {
     await withStateDirEnv("openclaw-doctor-retained-keys-", async ({ stateDir }) => {
       const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };

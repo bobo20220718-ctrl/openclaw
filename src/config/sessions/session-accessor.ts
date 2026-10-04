@@ -198,11 +198,12 @@ export {
 } from "./session-accessor.sqlite-participants.js";
 export { type SessionParticipantRecord } from "./session-accessor.sqlite-participant-projection.js";
 export {
-  listCanonicalSessionRepairFacts,
+  readCanonicalSessionRepairInventory,
   loadCanonicalSessionRepairEntries,
   scanDoctorSessionEntriesStrict,
   scanDoctorSessionEntriesTolerant,
   type CanonicalSessionRepairFact,
+  type CanonicalSessionRepairInventory,
 } from "./session-accessor.sqlite-canonical-inventory.js";
 export {
   applySessionEntryLifecycleMutation,

@@ -2,7 +2,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
-  listCanonicalSessionRepairFacts,
+  readCanonicalSessionRepairInventory,
   loadCanonicalSessionRepairEntries,
   loadExactSessionEntryReadOnly,
 } from "../config/sessions/session-accessor.js";
@@ -39,7 +39,7 @@ describe("doctor canonical session decision races", () => {
         sessionKey,
         storePath,
       });
-      const facts = listCanonicalSessionRepairFacts({ agentId: "main", env, storePath });
+      const { facts } = readCanonicalSessionRepairInventory({ agentId: "main", env, storePath });
       const database = openOpenClawAgentDatabase({
         agentId: "main",
         env,
@@ -61,7 +61,8 @@ describe("doctor canonical session decision races", () => {
         .run(sessionKey);
 
       expect(
-        listCanonicalSessionRepairFacts({ agentId: "main", env, storePath })[0]?.decisionToken,
+        readCanonicalSessionRepairInventory({ agentId: "main", env, storePath }).facts[0]
+          ?.decisionToken,
       ).not.toBe(facts[0]?.decisionToken);
       expect(() =>
         loadCanonicalSessionRepairEntries({ agentId: "main", env, storePath }, facts),

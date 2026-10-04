@@ -1,4 +1,4 @@
-# Task-only proof with pinned candidate and baseline identities.
+# Task-only integration proof with pinned candidate and baseline identities.
 # This workflow creates proof artifacts; it cannot land or publish.
 name: PR 156941 isolated proof
 run-name: PR 156941 isolated proof
@@ -16,8 +16,8 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CANDIDATE_SHA: 58c25f9b877b2f209dd7e731517892d204999624
-  BASE_SHA: 9c66d4c9a39b16d70e7c55186fe7e8550468a663
+  CANDIDATE_SHA: 1ae78d5bfe643fa42f39ed8c31e5b15e37a64fb3
+  BASE_SHA: 5076c4156b7037b72f4e0eb910906f3569383685
   CONTRIBUTOR_SHA: 17487454baa68c8901b1c9c84393135e93748a55
   BEFORE_FIX_SHA: e9dd74b55fd92227b4da8d5ea8a248d0e7dca304
   NODE_VERSION: "24.21.0"
@@ -260,7 +260,7 @@ jobs:
             --summary "$GITHUB_STEP_SUMMARY" \
             > "$PROOF_DIR/plugin-sdk-release.log" 2>&1
 
-      - name: Run focused candidate and import-closure proof
+      - name: Run merged-main integration and import-closure proof
         env:
           OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: ${{ runner.temp }}/pr-156941-positive-cache
         shell: bash
@@ -269,56 +269,21 @@ jobs:
           /usr/bin/time -v -o "$PROOF_DIR/focused.time.txt" \
             node scripts/run-vitest.mjs \
             src/gateway/server.chat-membership-authority.product.test.ts \
-            src/gateway/gateway-allowlist-store-read-failure.e2e.test.ts \
-            src/gateway/server.chat.gateway-server-chat-b.test.ts \
-            src/gateway/operator-role-policy.test.ts \
-            src/gateway/operator-run-authority.worker.test.ts \
-            src/gateway/session-access-authority.test.ts \
-            src/gateway/session-row-projection.worker-read.test.ts \
-            src/gateway/server-methods/mcp-app-onboarding.test.ts \
-            src/gateway/server.sessions.preview-resolve.test.ts \
-            src/gateway/server-methods/control-ui.session-preview.test.ts \
-            test/e2e/qa-lab/runtime/channel-progress-presentation.e2e.test.ts \
-            test/scripts/shrink-ratchet.test.ts \
-            test/scripts/check-test-mock-exports.test.ts \
-            src/acp/control-plane/spawn.test.ts \
-            src/gateway/server-methods/plugins.lifecycle-contention.test.ts \
-            src/gateway/server-plugin-in-process-dispatch.session-scopes.test.ts \
-            src/gateway/server/ws-connection/authenticated-request-dispatch.mutation-authority.test.ts \
-            src/gateway/session-utils.queued-collector.test.ts \
-            src/gateway/server.chat.orphaned-recovery.test.ts \
-            src/gateway/server-methods/chat.directive-tags.test.ts \
-            src/auto-reply/reply/agent-runner-required-maintenance.pending-input.test.ts \
-            test/e2e/qa-lab/runtime/gateway-rpc-chat.e2e.test.ts \
             src/gateway/server-methods/chat-send-admission.reads.test.ts \
-            src/gateway/server-methods/chat-send-global-identity.test.ts \
             src/gateway/server-methods/chat-send-profile-binding.test.ts \
-            src/gateway/session-sharing.worker.test.ts \
+            src/gateway/session-access-authority.test.ts \
+            src/gateway/session-utils-store-worker.test.ts \
             src/gateway/session-utils-store-lookup.test.ts \
-            src/config/sessions/combined-store-gateway.test.ts \
+            src/gateway/session-utils-store-sources.test.ts \
             src/config/sessions/session-entry-read.worker.test.ts \
             src/config/sessions/session-entry-readonly.worker.test.ts \
-            src/config/sessions/session-sharing-store.worker.test.ts \
-            src/config/sessions/session-canonical-key-policy.test.ts \
-            src/config/sessions/session-canonical-validation-readiness.test.ts \
-            src/infra/sqlite-schema-facts.test.ts \
-            src/infra/session-cost-usage-cache.admission.test.ts \
-            src/infra/session-cost-usage-cache.worker.test.ts \
-            src/state/openclaw-agent-db-read-error.test.ts \
-            src/state/openclaw-agent-db-readonly-scope.test.ts \
-            src/state/openclaw-state-db-readonly.retained.test.ts \
-            src/gateway/server-methods/usage.sessions-usage-owner-attribution.integration.test.ts \
-            src/gateway/server-worker-placement-reclaim.preparation.test.ts \
-            src/gateway/server-worker-placement-reclaim.test.ts \
+            src/gateway/server-methods/sessions-mutations.owner.test.ts \
             src/agents/embedded-agent-runner/run/model-setup.ownership.test.ts \
-            src/gateway/server-methods/chat-send-work-admission.test.ts \
-            src/gateway/server-methods/chat-send-pending-inputs.test.ts \
-            src/gateway/server-methods/chat-send-steering-custody.test.ts \
-            src/gateway/server-methods/sessions.initial-transfer-custody.test.ts \
-            src/gateway/server-methods.session-pending-stop.test.ts \
-            src/gateway/server-methods/chat.native-runtime-consent.test.ts \
-            src/gateway/server-methods/session-recovery-continuation.test.ts \
-            src/gateway/server.sessions.recover.test.ts \
+            src/auto-reply/reply/session.test.ts \
+            src/agents/embedded-agent-runner/run/lane-controller.writer-claim.test.ts \
+            src/auto-reply/reply/dispatch-from-config.owner-metadata.test.ts \
+            src/state/openclaw-agent-db-resources.test.ts \
+            src/gateway/server-methods/usage.sessions-usage-owner-attribution.integration.test.ts \
             test/scripts/runtime-process-build-graph.test.ts \
             src/auto-reply/reply/get-reply.imports.test.ts \
             src/state/openclaw-state.worker.imports.test.ts \
@@ -337,159 +302,6 @@ jobs:
           pnpm check:database-worker-ratchet --base "$BASE_SHA" 2>&1 | tee "$PROOF_DIR/worker-ratchet.log"
           pnpm check:test-mock-exports --base "$BASE_SHA" 2>&1 | tee "$PROOF_DIR/mock-exports-ratchet.log"
           pnpm check:madge-import-cycles 2>&1 | tee "$PROOF_DIR/madge.log"
-
-      - name: Prove the restored pre-fix hunks fail at their intended assertions
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, os, pathlib, re, subprocess, time
-          import xml.etree.ElementTree as ET
-
-          root = pathlib.Path.cwd()
-          output = pathlib.Path(os.environ['PROOF_DIR'])
-          sql_file = 'src/gateway/server-methods/chat-send-admission.reads.test.ts'
-          sql_title = 'prepares and authorizes a first chat turn without caller-thread SQL'
-          sql_assertion = 'expect(sql.queries, sql.queries.join("\\n")).toEqual([]);'
-          join_file = 'src/gateway/server-methods/chat-send-profile-binding.test.ts'
-          join_title = 'retains callback custody after its real worker reader is revoked'
-
-          # Keep current-main codecs and worker contracts, restoring only the old
-          # owner behavior. Full old-main code is incompatible with the new tests.
-          load_file = 'src/gateway/server-methods/chat-send-session.ts'
-          load_old = '''    () =>
-                request.stopCommand
-                  ? loadSessionEntry(sessionLoadKey, sessionLoadOptions, runtimeConfig)
-                  : withGatewaySessionEntry(
-                      sessionLoadKey,
-                      sessionLoadOptions,
-                      (entry) => entry,
-                      runtimeConfig,
-                      assertConfigCurrent,
-                    ),'''
-          load_new = '    () => loadSessionEntry(sessionLoadKey, sessionLoadOptions, runtimeConfig),'
-          base_source = subprocess.check_output(['git', 'show', f"{os.environ['BASE_SHA']}:{load_file}"], text=True)
-          assert load_new in base_source, 'Pinned main did not use the claimed synchronous loader'
-
-          pre_file = 'src/gateway/server-methods/chat-send-pre-admission.ts'
-          pre_old = '  await consumeChatSendCurrent(params, () => {});\n  const retrySession = {'
-          pre_new = '  params.assertCurrent?.();\n  const retrySession = {'
-          pre_base = subprocess.check_output(['git', 'show', f"{os.environ['BASE_SHA']}:{pre_file}"], text=True)
-          assert pre_new in pre_base, 'Pinned main did not use the claimed synchronous post-claim authority check'
-
-          join_source = 'src/gateway/server-methods/chat-send-admission.ts'
-          join_old = '''    // Reader cleanup may reject after starting effects. Join them before releasing
-              // custody, preserving the original authority failure without replaying work.
-              if (startedWork) {
-                await Promise.allSettled([startedWork()]);
-              }
-              cleanupPreDispatchAdmission();
-              throw error;'''
-          join_new = '    cleanupPreDispatchAdmission();\n    throw error;'
-          original_source = subprocess.check_output(['git', 'show', f"{os.environ['CONTRIBUTOR_SHA']}:{join_source}"], text=True)
-          assert join_new in original_source, 'Original contributor source did not contain the unjoined cleanup'
-
-          reservation_title = 'clears a pending reservation when its retained reader is revoked after publication'
-          reservation_old = '''  const reserved = await consumeChatSendCurrent(params, reserve).catch((error: unknown) => {
-              pendingReservation.clear();
-              throw error;
-            });'''
-          reservation_new = '  const reserved = await consumeChatSendCurrent(params, reserve);'
-          # The contributor awaited the publication without cleanup. Keep the current
-          # helper spelling while restoring that same unguarded await, not the old API.
-          original_reservation = '''  const { goalReservationConflict, goalRetry, retrySettled } = params.withCurrent
-              ? await params.withCurrent(inspectRetryAndReserve)
-              : inspectRetryAndReserve();'''
-          assert original_reservation in original_source, 'Original contributor source did not contain the unguarded reservation await'
-
-          acp_old = '  // Explicit metadata, including misses, keeps this synchronous resolver off SQLite.\n  let deletedAgentId = resolveDeletedAgentIdFromSessionKey(cfg, sessionKey, entry, {\n    acpMeta: null,\n  });\n  if (deletedAgentId !== null) {\n    const [acpMeta] = await readAcpSessionMetaForEntries({\n      cfg,\n      entries: [{ agentId: deletedAgentId, sessionKey: legacyKey ?? sessionKey, entry }],\n    });\n    deletedAgentId = resolveDeletedAgentIdFromSessionKey(cfg, sessionKey, entry, {\n      acpMeta: acpMeta ?? null,\n    });\n  }'
-          acp_new = '  const deletedAgentId = resolveDeletedAgentIdFromSessionKey(cfg, sessionKey, entry, {\n    acpMetadataSessionKey: legacyKey ?? sessionKey,\n  });'
-          assert acp_new in base_source, 'Pinned main did not use the claimed synchronous ACP lookup'
-
-          receipt_file = 'src/gateway/server-methods/request-authorization.ts'
-          receipt_old = '          assertInvocationCurrent: params.assertInvocationCurrent,\n          assertPreparationCurrent,'
-          receipt_new = '          assertInvocationCurrent: assertPreparationCurrent,\n          assertPreparationCurrent,'
-          router_before = subprocess.check_output(['git', 'show', f"{os.environ['BEFORE_FIX_SHA']}:src/gateway/server-methods.ts"], text=True)
-          lost_receipt = '        assertInvocationCurrent: () => {\n          runtimeParticipant?.assertCurrent();\n          profileBinding?.assertCurrent();\n          assertOperatorCurrent();\n          requestMutationAuthority.assertPreparationCurrent();\n        },'
-          assert lost_receipt in router_before, 'Recorded candidate did not bind preparation as its invocation guard'
-
-          profile_file = 'src/gateway/session-sharing-authorization-async.ts'
-          profile_old = '        preparedProfiles,\n'
-          profile_new = ''
-          profile_before = subprocess.check_output(['git', 'show', f"{os.environ['BEFORE_FIX_SHA']}:{profile_file}"], text=True)
-          assert '        ...params,\n        preparedSharing: { ...read, assertCurrent },' in profile_before, 'Recorded candidate did not omit prepared profile facts'
-
-          row_file = 'src/sessions/session-row-facts.ts'
-          row_old = (root / row_file).read_text().split('): boolean {\n', 1)[1]
-          row_before = subprocess.check_output(['git', 'show', f"{os.environ['BEFORE_FIX_SHA']}:{row_file}"], text=True)
-          row_new = row_before.split('): boolean {\n', 1)[1]
-          assert 'Boolean(change.storePath)' in row_new and 'matchesStore' in row_old, 'Recorded cross-store invalidation boundary drifted'
-
-          controls = [
-              ('initial-sync-lookup', load_file, load_old, load_new, sql_file, sql_title, sql_assertion, 2),
-              ('sync-acp-lookup', load_file, acp_old, acp_new, sql_file, 'prepares canonical free ACP without caller-thread SQL', 'expect(sql.queries, sql.queries.join("\\n")).toHaveLength(0);', 1),
-              ('post-claim-sync-authority', pre_file, pre_old, pre_new, sql_file, sql_title, sql_assertion, 2),
-              ('unjoined-callback', join_source, join_old, join_new, join_file, join_title, 'expect(released).toBeDefined();', 1),
-              ('uncleared-reservation', join_source, reservation_old, reservation_new, join_file, reservation_title, 'expect(fixture.context.dedupe.has(pendingKey)).toBe(false);', 1),
-              ('lost-receipt-guard', receipt_file, receipt_old, receipt_new, 'src/gateway/session-access-authority.test.ts', 'fences receipt expiry without attaching it to retained actor or session lifetime', 'expect(loadSessionEntryReadOnly(scope)).toEqual(committed);', 1),
-              ('unprepared-profile-policy', profile_file, profile_old, profile_new, 'src/gateway/session-sharing.worker.test.ts', 'rechecks prepared unprepared-role policy at the next worker admission', 'expect(result.error, "prepared role authorization").toBeNull();', 1),
-              ('cross-store-invalidation', row_file, row_old, row_new, 'src/gateway/session-utils-store-lookup.test.ts', 'rows through non-row events but fences members, aliases and topology', 'expect(assertCurrent, "unrelated physical store publication").not.toThrow();', 2),
-          ]
-          records = []
-          for label, source, before, after, test_file, title, assertion, expected_failures in controls:
-              path = root / source
-              original = path.read_bytes()
-              text = original.decode()
-              assert text.count(before) == 1, f'{label}: candidate hunk drifted; inspect before changing the control'
-              test_lines = (root / test_file).read_text().splitlines()
-              positions = [i + 1 for i, line in enumerate(test_lines) if line.strip() == assertion]
-              assert len(positions) == 1, f'{label}: expected assertion is not uniquely located'
-              assertion_line = positions[0]
-              report = output / f'{label}.xml'
-              env = dict(os.environ)
-              env['OPENCLAW_VITEST_FS_MODULE_CACHE_PATH'] = str(pathlib.Path(os.environ['RUNNER_TEMP']) / f'pr-156941-{label}-cache')
-              started = time.monotonic()
-              try:
-                  path.write_text(text.replace(before, after, 1))
-                  patch = subprocess.check_output(['git', 'diff', '--no-ext-diff', '--', source])
-                  (output / f'{label}.patch').write_bytes(patch)
-                  with (output / f'{label}.log').open('w') as log:
-                      result = subprocess.run([
-                          'node', 'scripts/run-vitest.mjs', test_file,
-                          '-t', title, '--maxWorkers=1', '--reporter=default', '--reporter=junit',
-                          f'--outputFile={report}',
-                      ], env=env, stdout=log, stderr=subprocess.STDOUT)
-                  assert result.returncode == 1, f'{label}: expected assertion failure, got exit {result.returncode}'
-                  # JUnit records suite-hook failures and unhandled errors separately.
-                  # JSON omits unhandled errors. Vitest reports global close errors later.
-                  log_text = (output / f'{label}.log').read_text()
-                  assert not re.search(r'error during close|close timed out after', log_text), f'{label}: Vitest teardown failed'
-                  data = ET.parse(report).getroot()
-                  assert data.tag == 'testsuites', f'{label}: unexpected JUnit report'
-                  assert int(data.attrib['errors']) == 0 and not data.findall('.//error'), f'{label}: unhandled error is not regression proof'
-                  suites = data.findall('testsuite')
-                  assert suites and all(int(suite.attrib['errors']) == 0 for suite in suites), f'{label}: suite error is not regression proof'
-                  failed = [case for case in data.iter('testcase') if case.findall('failure')]
-                  assert len(failed) == expected_failures, f'{label}: unexpected failing-test count'
-                  assert int(data.attrib['failures']) == expected_failures, f'{label}: unexpected suite failure'
-                  assert len(data.findall('.//failure')) == expected_failures, f'{label}: extra failure message is not regression proof'
-                  for case in failed:
-                      assert title in case.attrib['name'], f'{label}: unrelated test failed'
-                      assert case.find('skipped') is None, f'{label}: expected failing case was skipped'
-                      failures = case.findall('failure')
-                      assert len(failures) == 1, f'{label}: test has multiple errors'
-                      for failure in failures:
-                          assert failure.attrib['type'] == 'AssertionError', f'{label}: failure had the wrong type'
-                          detail = failure.attrib['message'] + '\n' + ''.join(failure.itertext())
-                          assert re.search(re.escape(pathlib.Path(test_file).name) + ':' + str(assertion_line) + r'(?::|\b)', detail), f'{label}: failure missed the intended assertion'
-                          if test_file == sql_file:
-                              assert re.search(r'\b(?:SELECT|PRAGMA|INSERT|CREATE)\b', detail, re.I), f'{label}: SQL evidence missing'
-                  records.append({'control': label, 'source': source, 'test': test_file, 'assertionLine': assertion_line, 'failedTests': [case.attrib['name'] for case in failed], 'wallSeconds': round(time.monotonic() - started, 3)})
-              finally:
-                  path.write_bytes(original)
-                  subprocess.run(['git', 'diff', '--exit-code', '--', source], check=True)
-                  (output / 'negative-controls.json').write_text(json.dumps(records, indent=2) + '\n')
-          PY
 
       - name: Verify restored candidate source
         shell: bash

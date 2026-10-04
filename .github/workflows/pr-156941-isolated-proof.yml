@@ -16,7 +16,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CANDIDATE_SHA: 1ae78d5bfe643fa42f39ed8c31e5b15e37a64fb3
+  CANDIDATE_SHA: 850cfd2b1dfb3fe9be0bd5d261761772ba3857c6
   BASE_SHA: 5076c4156b7037b72f4e0eb910906f3569383685
   CONTRIBUTOR_SHA: 17487454baa68c8901b1c9c84393135e93748a55
   BEFORE_FIX_SHA: e9dd74b55fd92227b4da8d5ea8a248d0e7dca304
@@ -271,6 +271,7 @@ jobs:
             src/gateway/server.chat-membership-authority.product.test.ts \
             src/gateway/server-methods/chat-send-admission.reads.test.ts \
             src/gateway/server-methods/chat-send-profile-binding.test.ts \
+            src/gateway/server-methods/chat.directive-tags.test.ts \
             src/gateway/session-access-authority.test.ts \
             src/gateway/session-utils-store-worker.test.ts \
             src/gateway/session-utils-store-lookup.test.ts \

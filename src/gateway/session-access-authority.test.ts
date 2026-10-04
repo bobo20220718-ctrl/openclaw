@@ -421,11 +421,19 @@ describe("session resource admission", () => {
       let resource: typeof viewer;
       const handler: GatewayRequestHandler = async ({ sessionAccessAuthority, respond }) => {
         const authority = sessionAccessAuthority!;
+        const effect = vi.fn();
+        const invoke = () => {
+          authority.assertCurrent();
+          effect();
+        };
         viewer = hold(authority.retain());
         resource = hold(authority.retainSession());
+        invoke();
+        expect(effect).toHaveBeenCalledOnce();
         await Promise.resolve();
         invocationActive = false;
-        expect(() => authority.assertCurrent()).toThrow("receipt expired");
+        expect(invoke).toThrow("receipt expired");
+        expect(effect).toHaveBeenCalledOnce();
         expect(() => authority.retain()).toThrow("receipt expired");
         expect(() => authority.retainSession()).toThrow("receipt expired");
         expect(() => viewer!.assertCurrent()).not.toThrow();

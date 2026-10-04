@@ -1,0 +1,386 @@
+# Task-only integration proof. Bind CANDIDATE_SHA after source review; no publication authority.
+name: PR 156941 placement integration
+run-name: PR 156941 placement integration
+
+on:
+  push:
+    branches: [test/pr-156941-placement-integration]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-156941-placement-integration
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CANDIDATE_SHA: 11bf8b703660ca8358bdaae04e8d25f2062c7363
+  BASE_SHA: d9f36acbe3b6c8a29ddeffe1e89ebe2b6992d085
+  PRODUCT_FIXTURE_BLOB: d7f6d610a68ba7e3617ad602178636c4736da0f8
+  NODE_VERSION: "24.21.0"
+
+jobs:
+  proof:
+    name: ${{ matrix.lane }}
+    if: github.ref == 'refs/heads/test/pr-156941-placement-integration'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        lane: [placement-owners, product-sdk]
+    env:
+      PROOF_LANE: ${{ matrix.lane }}
+    steps:
+      - name: Validate immutable proof inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PRODUCT_FIXTURE_BLOB" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]
+          PROOF_DIR="$RUNNER_TEMP/pr-156941-placement-integration"
+          printf 'PROOF_DIR=%s\n' "$PROOF_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$PROOF_DIR"
+
+      - name: Checkout exact candidate without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+
+      - name: Verify secretless candidate and fetch the public comparison base
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert actual == os.environ['CANDIDATE_SHA'], 'Candidate identity changed'
+          secret_names = (
+              'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY',
+              'GH_TOKEN', 'GITHUB_TOKEN', 'NPM_TOKEN', 'NODE_AUTH_TOKEN',
+              'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+              'GOOGLE_APPLICATION_CREDENTIALS', 'SSH_AUTH_SOCK',
+          )
+          assert not any(os.environ.get(name) for name in secret_names), 'Unexpected task credential'
+          credentials = subprocess.run(
+              ['git', 'config', '--get-regexp', r'http\..*extraheader'],
+              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+          )
+          assert credentials.returncode == 1, 'Git authentication remained after checkout'
+          subprocess.run(['git', 'diff', '--exit-code'], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--exit-code'], check=True)
+          fixture = 'src/gateway/server.chat-membership-authority.product.test.ts'
+          blob = subprocess.check_output(['git', 'hash-object', fixture], text=True).strip()
+          assert blob == os.environ['PRODUCT_FIXTURE_BLOB'], 'Original product fixture drifted'
+          pathlib.Path(os.environ['PROOF_DIR'], 'identity.json').write_text(json.dumps({
+              'candidate': actual,
+              'base': os.environ['BASE_SHA'],
+              'workflowHead': os.environ['GITHUB_SHA'],
+              'runner': os.environ['RUNNER_ENVIRONMENT'],
+              'lane': os.environ['PROOF_LANE'],
+              'productFixtureBlob': blob,
+              'productTimeoutMs': 90000,
+              'secretPreflight': 'passed',
+          }, indent=2) + '\n')
+          PY
+          git -c core.hooksPath=/dev/null fetch --no-tags --depth=1 \
+            https://github.com/openclaw/openclaw.git "$BASE_SHA"
+
+      - name: Setup maintained Node and pnpm toolchain
+        id: toolchain
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.21.0"
+          install-bun: "false"
+          cache-mode: "off"
+          semantic-checks: "true"
+
+      - name: Verify effective Node runtime
+        id: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version | tee "$PROOF_DIR/node-version.txt"
+          test "$(cat "$PROOF_DIR/node-version.txt")" = "v$NODE_VERSION"
+
+      - name: Install ripgrep for baseline ratchets
+        if: matrix.lane == 'placement-owners'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v rg >/dev/null 2>&1; then
+            exit 0
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ripgrep
+
+      - name: Run each selected whole file once and retain every result
+        id: tests
+        env:
+          OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: ${{ runner.temp }}/pr-156941-placement-cache-${{ matrix.lane }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess, sys, time
+          import xml.etree.ElementTree as ET
+          output = pathlib.Path(os.environ['PROOF_DIR'])
+          product = 'src/gateway/server.chat-membership-authority.product.test.ts'
+          files = [product] if os.environ['PROOF_LANE'] == 'product-sdk' else [
+              'src/gateway/server-methods/chat-send-admission.reads.test.ts',
+              'src/gateway/server.chat-goal.test.ts',
+              'src/gateway/server-methods/chat-send-pending-inputs.test.ts',
+              'src/gateway/server-methods/chat-send-profile-binding.test.ts',
+              'src/gateway/server-methods/chat-send-work-admission.test.ts',
+              'src/gateway/server.chat.orphaned-recovery.test.ts',
+              'src/auto-reply/reply/restart-recovery-claim.test.ts',
+              'src/agents/embedded-agent-runner/run-entry.worker-placement.test.ts',
+          ]
+          records = [{'file': file, 'state': 'unrun', 'passed': False} for file in files]
+          def save():
+              (output / 'test-results.json').write_text(json.dumps({
+                  'candidate': os.environ['CANDIDATE_SHA'], 'lane': os.environ['PROOF_LANE'],
+                  'plannedFiles': files, 'results': records,
+              }, indent=2) + '\n')
+          def assert_source():
+              assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == os.environ['CANDIDATE_SHA']
+              subprocess.run(['git', 'diff', '--exit-code'], check=True)
+              subprocess.run(['git', 'diff', '--cached', '--exit-code'], check=True)
+              assert subprocess.check_output(['git', 'hash-object', product], text=True).strip() == os.environ['PRODUCT_FIXTURE_BLOB']
+          save()
+          for index, record in enumerate(records, 1):
+              assert_source()
+              file = record['file']
+              report = output / f'{index:02d}-{pathlib.Path(file).name}.xml'
+              log_path = report.with_suffix('.log')
+              record['state'] = 'running'
+              save()
+              start = time.monotonic()
+              with log_path.open('w') as log:
+                  result = subprocess.run([
+                      'node', 'scripts/run-vitest.mjs', file, '--maxWorkers=1',
+                      '--reporter=default', '--reporter=junit', f'--outputFile={report}',
+                  ], stdout=log, stderr=subprocess.STDOUT)
+              record.update(state='completed', exitCode=result.returncode,
+                            wallSeconds=round(time.monotonic() - start, 3))
+              text = re.sub(r'\x1b\[[0-9;]*m', '', log_path.read_text())
+              record['teardownOrUnhandledErrors'] = re.findall(
+                  r'error during close|close timed out after|Unhandled (?:Error|Rejection|Exception)', text,
+              )
+              try:
+                  root = ET.parse(report).getroot()
+                  cases = list(root.iter('testcase'))
+                  assert root.tag == 'testsuites' and cases, 'No collected test cases'
+                  assert int(root.attrib['tests']) == len(cases), 'Incomplete JUnit report'
+                  assert all(case.attrib.get('classname', '').replace('\\', '/').endswith(file) for case in cases), 'Unexpected test file'
+                  record.update(tests=len(cases), failures=int(root.attrib['failures']),
+                                errors=int(root.attrib['errors']),
+                                skipped=sum(case.find('skipped') is not None for case in cases),
+                                testSeconds=float(root.attrib['time']))
+                  record['failedCases'] = [case.attrib['name'] for case in cases if case.find('failure') is not None or case.find('error') is not None]
+                  if file == product:
+                      assert len(cases) == 1 and record['skipped'] == 0, 'Product case missing or skipped'
+                      assert cases[0].attrib['name'] == 'carries current caller, membership and global ownership through transcript persistence and agent dispatch'
+                  record['passed'] = (
+                      result.returncode == 0 and record['failures'] == 0 and record['errors'] == 0
+                      and not root.findall('.//failure') and not root.findall('.//error')
+                      and all(int(suite.attrib.get('errors', 0)) == 0 for suite in root.findall('testsuite'))
+                      and record['tests'] > record['skipped'] and not record['teardownOrUnhandledErrors']
+                  )
+              except (OSError, ET.ParseError, ValueError, KeyError, AssertionError) as error:
+                  record['reportError'] = str(error)
+              save()
+              print(json.dumps(record), flush=True)
+              assert_source()
+          sys.exit(0 if all(record['passed'] for record in records) else 1)
+          PY
+
+      - name: Qualify the fresh-Goal placement negative control
+        if: ${{ matrix.lane == 'placement-owners' && steps.tests.outcome == 'success' }}
+        env:
+          OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: ${{ runner.temp }}/pr-156941-goal-placement-negative-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess, time
+          import xml.etree.ElementTree as ET
+          output = pathlib.Path(os.environ['PROOF_DIR'])
+          source = 'src/gateway/server-methods/chat-send-admission.ts'
+          test_file = 'src/gateway/server.chat-goal.test.ts'
+          title = 'starts the first message as a Goal with an ACP-scoped hook and replays without a second session or run'
+          expected_case = 'Goal chat admission and continuation > ' + title
+          assertion = 'expect(entryAtAck, "fresh Goal commits its own local incarnation").toMatchObject({'
+          before = '''      if (placementService && preparedPlacement?.sessionId !== admittedSessionId) {
+                  // A fresh Goal can select a new incarnation. Release this synchronous
+                  // reader before awaiting placement facts and rechecking admission.
+                  refreshPlacement = true;
+                  return;
+                }
+          '''
+          anchor = before + '      preparedPlacement?.facts.assertCurrent();'
+          target = pathlib.Path(source)
+          original = target.read_bytes()
+          pristine = subprocess.check_output(['git', 'show', os.environ['CANDIDATE_SHA'] + ':' + source])
+          assert original == pristine, 'Admission source changed before the control'
+          subprocess.run(['git', 'diff', '--exit-code'], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--exit-code'], check=True)
+          text = original.decode()
+          assert text.count(anchor) == 1, 'Inner placement mismatch guard drifted'
+          test_lines = pathlib.Path(test_file).read_text().splitlines()
+          positions = [index + 1 for index, line in enumerate(test_lines) if line.strip() == assertion]
+          assert len(positions) == 1, 'Durable fresh-Goal assertion is not unique'
+          assertion_line = positions[0]
+          record = {
+              'candidate': os.environ['CANDIDATE_SHA'], 'control': 'fresh-goal-placement',
+              'source': source, 'test': test_file, 'expectedCase': expected_case,
+              'kind': 'single source-derived regression hunk on the exact candidate',
+              'assertionLine': assertion_line, 'qualified': False, 'sourceRestored': False,
+          }
+          report = output / 'goal-placement-negative.xml'
+          log_path = output / 'goal-placement-negative.log'
+          start = time.monotonic()
+          try:
+              # Remove only the inner incarnation guard; retain initial preparation and outer refresh.
+              target.write_text(text.replace(anchor, '      preparedPlacement?.facts.assertCurrent();', 1))
+              patch = subprocess.check_output(['git', 'diff', '--no-ext-diff', '--', source])
+              (output / 'goal-placement-negative.patch').write_bytes(patch)
+              assert subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines() == [source]
+              with log_path.open('w') as log:
+                  result = subprocess.run([
+                      'node', 'scripts/run-vitest.mjs', test_file, '-t', re.escape(title),
+                      '--maxWorkers=1', '--reporter=default', '--reporter=junit',
+                      f'--outputFile={report}',
+                  ], stdout=log, stderr=subprocess.STDOUT)
+              record['exitCode'] = result.returncode
+              assert result.returncode == 1, 'Control must fail at its assertion'
+              log_text = re.sub(r'\x1b\[[0-9;]*m', '', log_path.read_text())
+              assert not re.search(r'error during close|close timed out after|Unhandled (?:Error|Rejection|Exception)', log_text), 'Control had a teardown or unhandled error'
+              data = ET.parse(report).getroot()
+              assert data.tag == 'testsuites'
+              assert int(data.attrib['errors']) == 0 and not data.findall('.//error')
+              suites = data.findall('testsuite')
+              assert suites and all(int(suite.attrib['errors']) == 0 for suite in suites)
+              cases = [case for case in data.iter('testcase') if case.find('skipped') is None]
+              assert len(cases) == 1 and cases[0].attrib['name'] == expected_case, 'Wrong active testcase'
+              assert cases[0].attrib.get('classname', '').replace('\\', '/').endswith(test_file)
+              assert int(data.attrib['failures']) == 1 and len(data.findall('.//failure')) == 1
+              failures = cases[0].findall('failure')
+              assert len(failures) == 1 and failures[0].attrib['type'] == 'AssertionError'
+              detail = failures[0].attrib['message'] + '\n' + ''.join(failures[0].itertext())
+              assert 'fresh Goal commits its own local incarnation' in detail, 'Control missed durable Goal ownership'
+              assert 'expected undefined to match object' in detail, 'Control failed for a different assertion'
+              # Keep the public reporter's redaction; a redacted source suffix needs the same named assertion.
+              frame = re.escape(pathlib.Path(test_file).name) + ':'
+              assert re.search(frame + r'(?:' + str(assertion_line) + r'(?::|\b)|<redacted len=\d+>)', detail), 'Expected source assertion frame missing'
+              assert subprocess.check_output(['git', 'diff', '--no-ext-diff', '--', source]) == patch
+              assert subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines() == [source]
+              record['qualified'] = True
+          finally:
+              target.write_bytes(original)
+              record['sourceRestored'] = target.read_bytes() == pristine
+              clean_worktree = subprocess.run(['git', 'diff', '--exit-code']).returncode == 0
+              clean_index = subprocess.run(['git', 'diff', '--cached', '--exit-code']).returncode == 0
+              record['trackedSourceUnchanged'] = clean_worktree and clean_index
+              record['qualified'] = record['qualified'] and record['sourceRestored'] and record['trackedSourceUnchanged']
+              record['wallSeconds'] = round(time.monotonic() - start, 3)
+              (output / 'goal-placement-negative.json').write_text(json.dumps(record, indent=2) + '\n')
+              assert record['sourceRestored'] and record['trackedSourceUnchanged'], 'Exact candidate restoration failed'
+          print(json.dumps(record))
+          PY
+
+      - name: Check database worker ratchet
+        if: ${{ always() && matrix.lane == 'placement-owners' && steps.runtime.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm check:database-worker-ratchet --base "$BASE_SHA" 2>&1 | tee "$PROOF_DIR/worker-ratchet.log"
+
+      - name: Check test mock export ratchet
+        if: ${{ always() && matrix.lane == 'placement-owners' && steps.runtime.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm check:test-mock-exports --base "$BASE_SHA" 2>&1 | tee "$PROOF_DIR/mock-ratchet.log"
+
+      - name: Check Madge import cycles
+        if: ${{ always() && matrix.lane == 'placement-owners' && steps.runtime.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm check:madge-import-cycles 2>&1 | tee "$PROOF_DIR/madge.log"
+
+      - name: Compare exact candidate against released Plugin SDK selectors
+        if: ${{ always() && matrix.lane == 'product-sdk' && steps.runtime.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          git diff --cached --exit-code
+          git diff --exit-code "$BASE_SHA" "$CANDIDATE_SHA" -- \
+            scripts/plugin-sdk-api-diff.mts src/plugin-sdk/api-diff.ts \
+            scripts/plugin-sdk-api-release-evidence.mjs \
+            scripts/lib/npm-json-output.mts scripts/lib/release-version.mjs \
+            scripts/openclaw-npm-extended-stable-release.mjs
+          bases_json="$(node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+          import { resolveNpmJsonEntries } from './scripts/lib/npm-json-output.mts';
+          import { parseReleaseVersion } from './scripts/lib/release-version.mjs';
+          import { resolveNpmPreflightSdkSelectors } from './scripts/openclaw-npm-extended-stable-release.mjs';
+          const selectors = resolveNpmPreflightSdkSelectors(JSON.parse(readFileSync('package.json', 'utf8')).version, 'latest');
+          const entries = resolveNpmJsonEntries(JSON.parse(execFileSync('npm', ['view', 'openclaw', 'dist-tags', '--json'], { encoding: 'utf8' })));
+          if (entries.length !== 1) throw new Error('Expected one public selector map');
+          const refs = Object.fromEntries(selectors.map(selector => {
+            const version = entries[0]?.[selector];
+            if (typeof version !== 'string' || !parseReleaseVersion(version)) throw new Error('Invalid public release selector');
+            return [selector, `v${version}`];
+          }));
+          process.stdout.write(JSON.stringify(refs));
+          NODE
+          )"
+          printf '%s\n' "$bases_json" > "$PROOF_DIR/sdk-selectors.json"
+          mapfile -t refs < <(jq -r '.[] | "+refs/tags/\(.):refs/tags/\(.)"' <<< "$bases_json" | sort -u)
+          git -c core.hooksPath=/dev/null fetch --no-tags --depth=1 \
+            https://github.com/openclaw/openclaw.git "${refs[@]}"
+          if [[ "$(jq 'length' <<< "$bases_json")" == 2 ]]; then
+            base_args=(--bases-json "$bases_json")
+          else
+            base_args=(--base "$(jq -r '.[]' <<< "$bases_json")")
+          fi
+          pnpm plugin-sdk:api:diff -- \
+            --head "$CANDIDATE_SHA" "${base_args[@]}" \
+            --evidence "$PROOF_DIR/plugin-sdk-release-evidence.json" \
+            --json "$PROOF_DIR/plugin-sdk-release-diff.json" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            > "$PROOF_DIR/plugin-sdk-release.log" 2>&1
+
+      - name: Verify all checks left the candidate unchanged
+        if: ${{ always() && steps.identity.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git hash-object src/gateway/server.chat-membership-authority.product.test.ts)" = "$PRODUCT_FIXTURE_BLOB"
+          git diff --exit-code
+          git diff --cached --exit-code
+          printf '{"candidate":"%s","trackedSourceUnchanged":true,"productFixtureUnchanged":true}\n' \
+            "$CANDIDATE_SHA" > "$PROOF_DIR/source-integrity.json"
+
+      - name: Upload every result including failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr-156941-placement-integration-${{ matrix.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr-156941-placement-integration/
+          if-no-files-found: error
+          retention-days: 7

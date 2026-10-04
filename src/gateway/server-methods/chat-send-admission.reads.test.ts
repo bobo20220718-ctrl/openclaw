@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { StatementSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 import {
@@ -10,7 +11,13 @@ import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
+import { setGatewayPluginMetadataSnapshot } from "../../plugins/current-plugin-metadata-snapshot.js";
+import { retainGatewayPluginMetadata } from "../../plugins/plugin-metadata-lifecycle.js";
+import { resolvePluginMetadataSnapshotAsync } from "../../plugins/plugin-metadata-snapshot.js";
 import * as sessionLifecycle from "../../sessions/session-lifecycle-admission.js";
+import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
+import { prepareUserProfileCatalog } from "../../state/user-profile-list.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { pendingChatSendDedupeKey } from "../server-shared.js";
@@ -48,41 +55,62 @@ it.each(["absent", "admitted"] as const)(
       if (!request.ok) {
         throw new Error(request.error);
       }
-      const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
-      const sql = observeHostDataSql();
+      const scheduler = createTestGatewayScheduler();
+      const metadataOwner = retainGatewayPluginMetadata(scheduler);
+      let profiles: Awaited<ReturnType<typeof prepareUserProfileCatalog>> | undefined;
       try {
-        const authorized = await resolveSessionMutationAuthorizationAsync({
-          client,
-          method: "chat.send",
-          requestParams: request.value.p,
-          context,
-        });
-        expect(authorized.error).toBeNull();
-        const prepared = await prepareChatSendSession({
-          request: request.value,
-          client,
-          context,
-        });
-        expect(prepared).toMatchObject({ ok: true, value: { entry: undefined } });
-        if (!prepared.ok || !authorized.authorization) {
-          throw new Error("First-turn preparation failed");
-        }
-        const respond = vi.fn();
-        expect(
-          await runChatSendPreAdmission({
+        // Gateway bootstrap publishes metadata; session projection retains profile facts.
+        // Neither startup owner may admit this first turn's agent database.
+        const metadata = await metadataOwner.runBootstrap(() =>
+          resolvePluginMetadataSnapshotAsync({ config: cfg, allowCurrent: false }),
+        );
+        metadataOwner.publish(metadata);
+        setGatewayPluginMetadataSnapshot(metadata, { config: cfg });
+        profiles = await prepareUserProfileCatalog();
+        expect(existsSync(resolveOpenClawAgentSqlitePath({ agentId: "main" }))).toBe(
+          store === "admitted",
+        );
+        const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
+        const sql = observeHostDataSql();
+        try {
+          const authorized = await resolveSessionMutationAuthorizationAsync({
+            client,
+            method: "chat.send",
+            requestParams: request.value.p,
+            context,
+          });
+          expect(authorized.error).toBeNull();
+          const prepared = await prepareChatSendSession({
             request: request.value,
-            session: prepared.value,
             client,
             context,
-            respond,
-            assertCurrent: authorized.authorization.assertCurrent,
-            withCurrent: authorized.authorization.withCurrent,
-          }),
-        ).toBe(true);
-        expect(respond).not.toHaveBeenCalled();
-        expect(sql.queries, sql.queries.join("\n")).toEqual([]);
+          });
+          expect(prepared).toMatchObject({ ok: true, value: { entry: undefined } });
+          if (!prepared.ok || !authorized.authorization) {
+            throw new Error("First-turn preparation failed");
+          }
+          const respond = vi.fn();
+          expect(
+            await runChatSendPreAdmission({
+              request: request.value,
+              session: prepared.value,
+              client,
+              context,
+              respond,
+              assertCurrent: authorized.authorization.assertCurrent,
+              withCurrent: authorized.authorization.withCurrent,
+            }),
+          ).toBe(true);
+          expect(respond).not.toHaveBeenCalled();
+          expect(sql.queries, sql.queries.join("\n")).toEqual([]);
+        } finally {
+          sql.restore();
+        }
       } finally {
-        sql.restore();
+        profiles?.release();
+        await metadataOwner.beginClose();
+        await scheduler.stop();
+        expect((await metadataOwner.close()).failures).toEqual([]);
       }
     });
   },

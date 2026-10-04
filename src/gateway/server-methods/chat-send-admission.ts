@@ -45,7 +45,6 @@ import { prepareGoalChatSendRetry } from "./chat-send-goal-retry.js";
 import {
   resolveChatSendRequestConflict,
   consumeChatSendCurrent,
-  respondChatSendAdmissionError,
   respondChatSessionRoutingChanged,
 } from "./chat-send-pre-admission.js";
 import type { ChatSendPreAdmissionParams } from "./chat-send-pre-admission.types.js";

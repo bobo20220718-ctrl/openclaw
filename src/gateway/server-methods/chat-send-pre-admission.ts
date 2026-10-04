@@ -315,7 +315,10 @@ export function respondChatSendRetry(
 export async function runChatSendPreAdmission(
   params: ChatSendPreAdmissionParams,
 ): Promise<boolean> {
-  await consumeChatSendCurrent(params, () => {});
+  // Stop owns its current-authority checks and typed cancellation errors below.
+  if (!params.request.stopCommand) {
+    await consumeChatSendCurrent(params, () => {});
+  }
   const { request, session, respond, context, client } = params;
   const { stopCommand } = request;
   const {

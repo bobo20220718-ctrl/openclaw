@@ -176,6 +176,7 @@ describe("native profile-bound input admission", () => {
             authorizationRead =
               input.kind === "session-exact-entries" &&
               input.includeMembers === true &&
+              input.selection === undefined &&
               input.sessionKeys.includes(fixture.scope.sessionKey);
             return input;
           }, options);

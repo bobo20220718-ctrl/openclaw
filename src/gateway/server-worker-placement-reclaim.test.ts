@@ -30,7 +30,10 @@ import { workerWorkspaceResultStaging } from "./worker-environments/workspace-re
 const lookup = vi.hoisted(() => ({
   value: undefined as ReturnType<typeof import("./session-utils.js").loadSessionEntry> | undefined,
 }));
-vi.mock("./session-utils.js", () => ({ loadSessionEntry: () => lookup.value }));
+vi.mock("./session-utils.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./session-utils.js")>()),
+  loadSessionEntry: () => lookup.value,
+}));
 vi.mock("../config/config.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../config/config.js")>()),
   getRuntimeConfig: () => ({}),

@@ -30,7 +30,7 @@ import {
   signDevicePayload,
 } from "../infra/device-identity.js";
 import { captureEnv } from "../test-utils/env.js";
-import type { TestPortClaim } from "../test-utils/port-claims.js";
+import { acquireTestPortBlock, type TestPortClaim } from "../test-utils/port-claims.js";
 import {
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
@@ -42,7 +42,7 @@ import { buildDeviceAuthPayloadV3 } from "./device-auth.js";
 import { GatewayStartupCleanupError } from "./server-shutdown.js";
 import { startGatewayServer, type GatewayServerOptions } from "./server.js";
 import { GATEWAY_STARTUP_MUTATED_ENV_KEYS } from "./test-helpers.env.js";
-import { reserveGatewayTestListener } from "./test-helpers.listener.js";
+import { reserveGatewayTestListener, startClaimedGateway } from "./test-helpers.listener.js";
 
 /** Connect a GatewayClient with test defaults and resolve after hello-ok. */
 export async function connectGatewayClient(params: {
@@ -318,8 +318,15 @@ export async function startGatewayWithClient(
     clearConfigCache();
     clearSessionStoreCacheForTest();
 
-    listener = await reserveGatewayTestListener(params.portClaim ?? params.port);
-    const port = listener.port;
+    // The retained listener is HTTP-only; TLS must create its own secure server.
+    const secureClaim = params.secure
+      ? (params.portClaim ??
+        (await acquireTestPortBlock({ port: params.port, offsets: [0, 1, 2, 3, 4] })))
+      : undefined;
+    listener = secureClaim
+      ? undefined
+      : await reserveGatewayTestListener(params.portClaim ?? params.port);
+    const port = secureClaim?.port ?? listener!.port;
     const start = () =>
       startGatewayServer(port, {
         bind: "loopback",
@@ -327,7 +334,9 @@ export async function startGatewayWithClient(
         controlUiEnabled: false,
         hotReloadRecovery: params.hotReloadRecovery,
       });
-    const startedServer = await listener.start(start);
+    const startedServer = secureClaim
+      ? await startClaimedGateway(secureClaim, start)
+      : await listener!.start(start);
     server = startedServer;
     const client = await connectGatewayClient({
       url: `${params.secure ? "wss" : "ws"}://127.0.0.1:${port}`,

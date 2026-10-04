@@ -104,10 +104,11 @@ export {
   resolveSessionVisibility,
 } from "./session-sharing-policy.js";
 
-export function resolveSessionMutationAuthorization(params: SessionMutationAuthorizationParams): {
+export function resolveSessionMutationAuthorization(request: SessionMutationAuthorizationParams): {
   authorization?: SessionMutationAuthorization;
   error: ErrorShape | null;
 } {
+  let params = request;
   if (params.method === "chat.send") {
     const normalized = resolveChatSendAuthorizationParams(
       params.context.getRuntimeConfig(),

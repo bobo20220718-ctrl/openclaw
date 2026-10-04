@@ -290,7 +290,7 @@ export async function handleGatewayRequest(
         : await createExpectedProfileBinding(
             req.expectedProfileId,
             client,
-            readGatewayRequestMutationAuthority(opts).assertLifetimeCurrent,
+            readGatewayRequestMutationAuthority(opts).assertPreparationCurrent,
           ));
     // WS publication already owns the shared guard, including policy-close responses.
     const profileRespond =
@@ -345,7 +345,7 @@ export async function handleGatewayRequest(
           runtimeParticipant?.assertCurrent();
           profileBinding?.assertCurrent();
           assertOperatorCurrent();
-          requestMutationAuthority.assertCurrent();
+          requestMutationAuthority.assertPreparationCurrent();
         },
       });
       sessionAccessAuthority = authorization.sessionAccessAuthority;

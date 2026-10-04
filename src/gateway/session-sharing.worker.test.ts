@@ -6,7 +6,7 @@ import { addSessionMember, removeSessionMember } from "../config/sessions/sessio
 import { removeSessionMember as removeSessionMemberSync } from "../config/sessions/session-sharing-store.native.js";
 import { historyLane } from "../config/sessions/session-transcript-worker-resources.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lifecycle.js";
-import { setUserProfileRole } from "../state/user-profiles.js";
+import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type {
   GatewayRequestContext,
@@ -65,8 +65,9 @@ it.each([
           logicalStorePath: route.storePath,
           includeMembership: true,
           assertConfigCurrent: () => {},
-          consume: (latest, membership, assertSourceCurrent) =>
-            result.authorization!.withPreparedCurrent!(
+          consume: (latest, membership, assertSourceCurrent) => {
+            expect(latest.legacyKey ?? latest.canonicalKey).toBe(route.canonicalKey);
+            return result.authorization!.withPreparedCurrent!(
               {
                 agentId: latest.agentId,
                 storePath: latest.storePath,
@@ -100,7 +101,8 @@ it.each([
                 effect();
               },
               assertSourceCurrent,
-            ),
+            );
+          },
         });
         await result.authorization!.withCurrent!(() => result.authorization!.assertCurrent());
         expect(effect).toHaveBeenCalledOnce();

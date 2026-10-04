@@ -276,6 +276,8 @@ export async function withQualifiedGatewaySessionEntry<T>(params: {
       ...params,
       consume: (target, membership, assertSourceCurrent) => {
         const canonicalMatch = findCanonicalStoreMatch(target.store, target.storeKeys);
+        // Qualification retains the selected store key even before its row exists.
+        const storeKey = canonicalMatch?.key ?? params.target.storeKey;
         const assertCurrent = () => {
           assertSourceCurrent();
           params.assertConfigCurrent();
@@ -287,8 +289,7 @@ export async function withQualifiedGatewaySessionEntry<T>(params: {
             cfg: params.cfg,
             ...target,
             entry: canonicalMatch?.entry,
-            legacyKey:
-              canonicalMatch?.key !== target.canonicalKey ? canonicalMatch?.key : undefined,
+            legacyKey: storeKey !== target.canonicalKey ? storeKey : undefined,
           },
           membership,
           assertCurrent,

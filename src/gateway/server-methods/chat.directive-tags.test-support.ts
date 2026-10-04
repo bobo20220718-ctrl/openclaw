@@ -112,12 +112,13 @@ export function createGlobalChatDirectiveConfig(): OpenClawConfig {
 export function readChatDirectiveConfig(
   state: Pick<ChatDirectiveSessionState, "config" | "mainSessionKey" | "storePath">,
 ): OpenClawConfig {
+  const session = state.config.session as OpenClawConfig["session"];
   return inheritLegacyDefaultAgentId(state.config, {
     ...state.config,
     session: {
-      ...(state.config.session as Record<string, unknown> | undefined),
+      ...session,
       mainKey: state.mainSessionKey,
-      store: state.storePath,
+      store: session?.store ?? state.storePath,
     },
   });
 }
@@ -128,7 +129,14 @@ export function createChatDirectiveSuiteResources() {
   const databasePath = path.join(root, "openclaw-agent.sqlite");
   const env = { ...process.env, OPENCLAW_STATE_DIR: root };
   const previousEnv = captureEnv(["OPENCLAW_STATE_DIR"]);
+  const databaseOwners = new Map([[databasePath, "main"]]);
   let metadataOwner: GatewayPluginMetadataOwner | undefined;
+  const closeDatabase = async (storePath: string, agentId: string) => {
+    await drainAgentDatabaseResources({ path: storePath, agentId }, async () =>
+      disposeOpenClawAgentDatabaseByPath(storePath, { env }),
+    );
+    databaseOwners.delete(storePath);
+  };
   return {
     root,
     databasePath,
@@ -136,6 +144,17 @@ export function createChatDirectiveSuiteResources() {
     runFixture: fixtureLifetime.run,
     verifyFixtureCleanup: fixtureLifetime.verifyCleanup,
     settleFixtures: () => fixtureLifetime.cleanup(),
+    openDatabase(agentId: string, storePath: string) {
+      databaseOwners.set(storePath, agentId);
+      openOpenClawAgentDatabase({ agentId, env, path: storePath });
+    },
+    async closeCaseDatabases() {
+      for (const [storePath, agentId] of databaseOwners) {
+        if (storePath !== databasePath) {
+          await closeDatabase(storePath, agentId);
+        }
+      }
+    },
     // The caller retains cleanup ownership before opening can fail.
     open() {
       setTestEnvValue("OPENCLAW_STATE_DIR", root);
@@ -173,7 +192,10 @@ export function createChatDirectiveSuiteResources() {
       const cfg = readChatDirectiveConfig(state);
       let captured: CapturedSessionEntryReadSource | undefined;
       loadExactSessionEntryCandidates({
-        readSource: { agentId: "main", path: state.storePath },
+        readSource: {
+          agentId: expectDefined(databaseOwners.get(state.storePath), "fixture database owner"),
+          path: state.storePath,
+        },
         env,
         sessionKeys: [canonicalKey],
         readOnly: true,
@@ -200,9 +222,9 @@ export function createChatDirectiveSuiteResources() {
       try {
         const metadataCleanup = await metadataOwner?.close();
         expect(metadataCleanup?.failures ?? []).toEqual([]);
-        await drainAgentDatabaseResources({ path: databasePath, agentId: "main" }, async () =>
-          disposeOpenClawAgentDatabaseByPath(databasePath, { env }),
-        );
+        for (const [storePath, agentId] of databaseOwners) {
+          await closeDatabase(storePath, agentId);
+        }
         await closeOpenClawStateDatabaseByPathAsync(resolveOpenClawStateSqlitePath(env));
         fs.rmSync(root, { recursive: true, force: true });
       } finally {

@@ -45,6 +45,7 @@ import { waitForSessionTranscriptIndexReconcile } from "../../config/sessions/se
 import { resolveMirroredTranscriptText } from "../../config/sessions/transcript-mirror.js";
 import { resolveSessionTranscriptActiveLeafEntryId } from "../../config/sessions/transcript-tree.js";
 import { withOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
 import { RUN_STALE_TAKEOVER_MS } from "../../logging/diagnostic-run-activity.js";
@@ -601,8 +602,21 @@ async function createTranscriptFixture(
     agentId: "main",
     sessionKey: "main",
   },
+  fixtureStore?: "fixed" | "per-agent",
 ) {
   const { dir, transcriptPath } = createFixturePaths(prefix);
+  if (fixtureStore) {
+    const store = path.join(
+      dir,
+      fixtureStore === "per-agent" ? "{agentId}.sqlite" : "session.sqlite",
+    );
+    mockState.config = {
+      ...mockState.config,
+      session: { ...(mockState.config.session as OpenClawConfig["session"]), store },
+    };
+    mockState.storePath = store.replace("{agentId}", owner.agentId ?? "main");
+    suiteResources.openDatabase(owner.agentId ?? "main", mockState.storePath);
+  }
   await seedChatDirectiveFileTranscript(
     { ...owner, storePath: mockState.storePath },
     mockState.sessionId,
@@ -850,7 +864,11 @@ function useChatTestModel(model: "vision-model" | "text-only", configured = fals
 
 async function createGlobalTranscriptFixture(prefix: string, agentId = "main") {
   mockState.config = createGlobalChatDirectiveConfig();
-  return await createTranscriptFixture(prefix, { agentId, sessionKey: "global" });
+  return await createTranscriptFixture(
+    prefix,
+    { agentId, sessionKey: "global" },
+    agentId === "main" ? undefined : "per-agent",
+  );
 }
 
 async function createReadyChatTranscript(prefix: string) {
@@ -1169,8 +1187,10 @@ afterEach(async () => {
   await suiteResources.settleFixtures();
   // ACKs and terminal errors can precede detached transcript cleanup.
   await waitForAssertion(() => expect(getActiveSessionWorkAdmissionCount()).toBe(0));
+  await suiteResources.closeCaseDatabases();
   replyRunRegistryTesting.resetReplyRunRegistry();
   mockState.reset();
+  mockState.storePath = suiteDatabasePath;
   bindingMocks.resolveByConversation.mockReset();
   bindingMocks.resolveByConversation.mockReturnValue(null);
 });
@@ -4473,15 +4493,23 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
   ] satisfies ChatDeliveryRoutingCase[])(
     "chat.send %s",
     async (...[_name, id, delivery, sessionKey, options = {}]: ChatDeliveryRoutingCase) => {
-      await createTranscriptFixture(`openclaw-chat-send-${id}-`, { agentId: "main", sessionKey });
-      mockState.finalText = "ok";
       mockState.mainSessionKey = options.mainSessionKey ?? "main";
+      await createTranscriptFixture(
+        `openclaw-chat-send-${id}-`,
+        { agentId: "main", sessionKey },
+        options.mainSessionKey ? "fixed" : undefined,
+      );
+      mockState.finalText = "ok";
       mockState.sessionEntry = {
         delivery: normalizeSessionDeliveryState({
           context: delivery,
           ...(options.origin ? { origin: options.origin } : {}),
         }),
       };
+      await upsertSessionEntryCore(
+        { agentId: "main", sessionKey, storePath: mockState.storePath },
+        { sessionId: mockState.sessionId, ...mockState.sessionEntry },
+      );
       const client = options.clientMode
         ? {
             connect: {
@@ -4709,6 +4737,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     await createReadyChatTranscript("openclaw-chat-send-user-transcript-offloaded-");
     mockState.triggerAgentRunStart = true;
     useChatTestModel("vision-model", true);
+    await seedSqliteSessionEntry(mockState.sessionEntry);
     setSavedMediaResults(
       ["/tmp/offloaded-big.png", "image/png", "offloaded-big.png"],
       ["/tmp/chat-send-inline.png", "image/png", "chat-send-inline.png"],
@@ -5371,6 +5400,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       idempotencyKey: "idem-stale-transcript-owner",
       message: "keep this Gateway turn",
       sessionKey: staleSessionKey,
+      requestParams: { sessionId: mockState.sessionId },
       expectBroadcast: false,
     });
 
@@ -5687,6 +5717,7 @@ describe("chat.send local operator client sender context", () => {
   ])("does not mint configured-MCP cron authority for $name", async (testCase) => {
     await createSqliteTranscriptFixture("openclaw-chat-send-cron-authority-negative-");
     mockState.sessionEntry = testCase.sessionEntry ?? {};
+    await seedSqliteSessionEntry(mockState.sessionEntry);
     let boundResolver: ReturnType<typeof bindActiveCronCreatorAuthorityResolver>;
     mockState.cronAuthorityProbe = async (runId, capability) => {
       runWithCronCreatorAuthorityCapabilityResolver({

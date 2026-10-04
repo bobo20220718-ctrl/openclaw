@@ -9,10 +9,11 @@ import { resolveSessionMutationAuthorization } from "./session-sharing.js";
 
 /** Read participation in the worker while retaining its owner through authorization. */
 export async function resolveSessionMutationAuthorizationAsync(
-  params: Parameters<typeof resolveSessionMutationAuthorization>[0] & {
+  request: Parameters<typeof resolveSessionMutationAuthorization>[0] & {
     assertInvocationCurrent?: () => void;
   },
 ) {
+  let params = request;
   params.assertInvocationCurrent?.();
   if (params.method === "chat.send") {
     const normalized = resolveChatSendAuthorizationParams(

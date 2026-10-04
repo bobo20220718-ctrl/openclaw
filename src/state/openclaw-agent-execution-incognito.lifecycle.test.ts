@@ -1,5 +1,6 @@
 import "../test-utils/prepare-compiled-subprocesses.js";
 import assert from "node:assert/strict";
+import path from "node:path";
 import { Worker } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
@@ -12,6 +13,11 @@ import type {
   IncognitoLifecycleEntry,
   IncognitoLifecycleOperations,
 } from "../config/sessions/session-incognito-lifecycle-contract.js";
+import {
+  deleteIncognitoSessionLifecycle,
+  reclaimIncognitoSessionLifecycle,
+} from "../config/sessions/session-incognito-lifecycle-operations.js";
+import { formatErrorMessage } from "../infra/errors.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import {
   markPluginRegistryActive,
@@ -19,11 +25,20 @@ import {
 } from "../plugins/registry-lifecycle.js";
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
+import {
+  onSessionIdentityMutation,
+  type SessionIdentityMutation,
+} from "../sessions/session-lifecycle-events.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { beginAgentDeletionJournal, removeAgentDeletionJournal } from "./agent-deletion-journal.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
 import type { IncognitoAgentDatabaseExecution } from "./openclaw-agent-execution-incognito.js";
 import { captureOpenClawAgentDatabaseExecution } from "./openclaw-agent-execution.js";
-import { closeOpenClawStateDatabaseAsync } from "./openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  runOpenClawStateWriteTransaction,
+} from "./openclaw-state-db.js";
+import { createSessionRepositoryWorkspaceStore } from "./session-repository-workspaces.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterAll);
 const authority: IncognitoSessionAuthority = { assertCurrent() {} };
@@ -118,23 +133,13 @@ function remove(
   capture?: Parameters<IncognitoAgentDatabaseExecution["sessions"]["lifecycle"]>[3],
 ): Promise<IncognitoLifecycleOperations["session.lifecycle.delete"]["output"]> {
   if (!capture) {
-    return withDeletion([target], (assertCurrent, captured) =>
-      remove(
-        target,
-        reason,
-        owner,
-        {
-          assertCurrent() {
-            assertCurrent();
-            source.assertCurrent();
-          },
-          authorize(stage, facts) {
-            return source.authorize?.(stage, facts);
-          },
-        },
-        captured,
-      ),
-    );
+    return deleteIncognitoSessionLifecycle({
+      actor: owner,
+      authority: source,
+      env,
+      target,
+      reason,
+    });
   }
   return owner.sessions.lifecycle(
     source,
@@ -469,6 +474,25 @@ it.each([
   },
 );
 
+it("cleans repository ownership after actor deletion without reopening its sentinel", async () => {
+  const target = await create("repository-cleanup");
+  const repositories = createSessionRepositoryWorkspaceStore({ env });
+  const workspace = await repositories.create({
+    agentId: actor.agentId,
+    sessionKey: target.sessionKey,
+    url: "https://example.test/synthetic.git",
+    assertCurrent() {},
+  });
+  const sql = observeHostDataSql();
+  try {
+    expect(await remove(target)).toMatchObject({ deleted: true, archivedTranscripts: [] });
+    expect(await repositories.get(workspace.workspaceId)).toBeUndefined();
+    expect(sql.queries).toEqual([]);
+  } finally {
+    sql.restore();
+  }
+});
+
 it("rechecks reclamation snapshots and preserves sessions outside the selected lifecycle", async () => {
   const target = await create("reclaim-target");
   const sibling = await create("retained-reclaim-sibling");
@@ -486,16 +510,39 @@ it("rechecks reclamation snapshots and preserves sessions outside the selected l
   expect(plan.entries.map(({ sessionKey }) => sessionKey)).toEqual([target.sessionKey]);
   await append(target, "changed after plan");
   await expect(reclaim(plan)).rejects.toThrow("state changed before deletion");
+  const mutations: SessionIdentityMutation[] = [];
+  const unsubscribe = onSessionIdentityMutation((mutation) => mutations.push(mutation));
   const sql = observeHostDataSql();
   try {
     const fresh = await prepare();
     expect(fresh.entries.map(({ sessionKey }) => sessionKey)).toEqual([target.sessionKey]);
-    expect(await reclaim(fresh)).toEqual({ archivedTranscripts: [], removedEntries: 1 });
+    expect(
+      await reclaimIncognitoSessionLifecycle({
+        actor,
+        authority,
+        env,
+        input: {
+          sessionKeySegmentPrefix: "dashboard:incognito-reclaim-",
+          transcriptContentMarker: "synthetic cleanup",
+          orphanTranscriptMinAgeMs: 0,
+          nowMs: Date.now() + 86_400_000,
+        },
+      }),
+    ).toEqual({ archivedTranscripts: [], removedEntries: 1 });
+    expect(mutations).toEqual([
+      {
+        agentId: actor.agentId,
+        databaseIdentity: actor.identity.incarnation,
+        kind: "delete",
+        previous: { sessionId: target.entry.sessionId, sessionKeys: [target.sessionKey] },
+      },
+    ]);
     expect(
       (await actor.sessions.read(authority, { sessionKey: sibling.sessionKey })).entry?.sessionId,
     ).toBe(sibling.entry.sessionId);
     expect(sql.queries).toEqual([]);
   } finally {
+    unsubscribe();
     sql.restore();
   }
 });
@@ -603,3 +650,39 @@ it.each(["commit", "rollback", "actor loss"] as const)(
     }
   },
 );
+
+it("observes a foreign deletion fence on the retained actor", async () => {
+  const target = await create("foreign-deletion-fence");
+  const root = path.join(path.dirname(actor.path), "foreign-fence");
+  const operationId = "foreign-deletion";
+  beginAgentDeletionJournal(
+    {
+      agentId: "foreign-fence",
+      operationId,
+      agentDir: root,
+      workspaceDir: path.join(root, "workspace"),
+      sessionsDir: path.join(root, "sessions"),
+      deleteFiles: true,
+    },
+    { env },
+  );
+  // A foreign commit has no host publication; the worker must read the current journal row.
+  runOpenClawStateWriteTransaction(
+    ({ db }) => {
+      db.prepare("UPDATE agent_deletion_journal SET agent_id = ? WHERE agent_id = ?").run(
+        actor.agentId,
+        "foreign-fence",
+      );
+    },
+    { env },
+  );
+  try {
+    expect(() => actor.assertCurrent()).not.toThrow();
+    const failure: unknown = await actor.sessions
+      .read(authority, { sessionKey: target.sessionKey })
+      .catch((error: unknown) => error);
+    expect(formatErrorMessage(failure)).toContain("is deleted");
+  } finally {
+    removeAgentDeletionJournal(actor.agentId, operationId, { env });
+  }
+});

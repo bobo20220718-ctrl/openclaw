@@ -1,0 +1,144 @@
+name: PR 156941 real I/O authority proof
+run-name: PR 156941 real I/O authority proof
+on:
+  push:
+    branches: [test/pr-156941-real-io-proof]
+permissions:
+  contents: read
+concurrency:
+  group: pr-156941-real-io-proof
+  cancel-in-progress: false
+jobs:
+  proof:
+    if: github.ref == 'refs/heads/test/pr-156941-real-io-proof'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CANDIDATE_SHA: a80c18ab9df88b7c20721e06cd0d61e9044f5848
+      PROOF_COMMIT: ${{ github.sha }}
+    steps:
+      - name: Checkout unchanged production candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+      - name: Verify secretless source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          names = ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN', 'NPM_TOKEN', 'NODE_AUTH_TOKEN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'GOOGLE_APPLICATION_CREDENTIALS', 'SSH_AUTH_SOCK')
+          assert not any(os.environ.get(name) for name in names), 'Unexpected task credential'
+          auth = subprocess.run(['git', 'config', '--get-regexp', r'http\..*extraheader'], capture_output=True)
+          assert auth.returncode == 1, 'Retained Git authentication'
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == os.environ['CANDIDATE_SHA']
+          output = pathlib.Path(os.environ['RUNNER_TEMP'], 'real-io-proof')
+          output.mkdir()
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              print(f'PROOF_DIR={output}', file=stream)
+          PY
+      - name: Checkout reviewed test overlays
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .proof-assets
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.real-io-proof/session-access-authority.test.ts
+            /.real-io-proof/server.chat-membership-authority.product.test.ts
+            /.real-io-proof/manifest.json
+      - name: Apply only the two reviewed tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          assets = pathlib.Path('.proof-assets/.real-io-proof')
+          expected = {
+              'session-access-authority.test.ts': 'a19c46a5371328196af3ff6d33a99ca305e557df4b2e3880bcadafcefaecd5e8',
+              'server.chat-membership-authority.product.test.ts': '41fbc3635048a25e9f5510918186072dced3ada1bcedfb64b7627b0396977c71',
+          }
+          assert json.loads((assets / 'manifest.json').read_text()) == expected
+          for name, digest in expected.items():
+              source = assets / name
+              assert source.is_file() and not source.is_symlink()
+              data = source.read_bytes()
+              assert hashlib.sha256(data).hexdigest() == digest, 'Reviewed test bytes changed'
+              pathlib.Path('src/gateway', name).write_bytes(data)
+          changed = subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
+          assert sorted(changed) == sorted(f'src/gateway/{name}' for name in expected)
+          identity = {'productionHead': os.environ['CANDIDATE_SHA'], 'proofCommit': os.environ['PROOF_COMMIT'], 'testSha256': expected, 'kind': 'test-only overlay; production sources unchanged'}
+          pathlib.Path(os.environ['PROOF_DIR'], 'identity.json').write_text(json.dumps(identity, indent=2))
+          PY
+          git diff --check
+      - name: Setup Node and pnpm
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.21.0"
+          install-bun: "false"
+          cache-mode: "off"
+          semantic-checks: "true"
+      - name: Build unchanged candidate
+        env:
+          OPENCLAW_BUILD_PRIVATE_QA: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/time -v -o "$PROOF_DIR/build.time.txt" pnpm build 2>&1 | tee "$PROOF_DIR/build.log"
+      - name: Run real I/O authority fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess, time
+          import xml.etree.ElementTree as ET
+          output = pathlib.Path(os.environ['PROOF_DIR'])
+          files = ['session-access-authority.test.ts', 'server.chat-membership-authority.product.test.ts']
+          records = []
+          for index, name in enumerate(files):
+              started = time.monotonic()
+              report = output / f'fixture-{index}.xml'
+              log = output / f'fixture-{index}.log'
+              env = dict(os.environ)
+              env['OPENCLAW_VITEST_FS_MODULE_CACHE_PATH'] = str(pathlib.Path(os.environ['RUNNER_TEMP'], f'real-io-{index}-cache'))
+              with log.open('w') as stream:
+                  result = subprocess.run(['node', 'scripts/run-vitest.mjs', f'src/gateway/{name}', '--maxWorkers=1', '--reporter=default', '--reporter=junit', f'--outputFile={report}'], env=env, stdout=stream, stderr=subprocess.STDOUT)
+              text = log.read_text()
+              data = ET.parse(report).getroot() if report.is_file() else None
+              cases = list(data.iter('testcase')) if data is not None else []
+              required = ['fences receipt expiry', 'fences profile selection expiry'] if index == 0 else ['carries current caller, membership and global ownership']
+              selected = [case for case in cases if any(title in case.attrib.get('name', '') for title in required)]
+              complete = len(selected) == len(required) and all(case.find('skipped') is None for case in selected)
+              clean_teardown = not re.search(r'error during close|close timed out after|Unhandled (?:Error|Rejection|Exception)', text)
+              clean_errors = data is not None and int(data.attrib.get('errors', 0)) == 0 and not data.findall('.//error')
+              record = {'file': name, 'exitCode': result.returncode, 'wallSeconds': round(time.monotonic()-started, 3), 'requiredCasesExecuted': complete, 'cleanTeardown': clean_teardown, 'cleanErrors': clean_errors, 'failedCases': [case.attrib.get('name') for case in cases if case.find('failure') is not None]}
+              records.append(record)
+              (output / 'results.json').write_text(json.dumps(records, indent=2))
+              print(json.dumps(record), flush=True)
+          raise SystemExit(1 if any(record['exitCode'] != 0 or not record['requiredCasesExecuted'] or not record['cleanTeardown'] or not record['cleanErrors'] for record in records) else 0)
+          PY
+      - name: Confirm production source stayed unchanged
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          assert changed <= {'src/gateway/session-access-authority.test.ts', 'src/gateway/server.chat-membership-authority.product.test.ts'}, 'Unexpected production source mutation'
+          PY
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr-156941-real-io-${{ github.run_id }}
+          path: ${{ runner.temp }}/real-io-proof/
+          if-no-files-found: error
+          retention-days: 7

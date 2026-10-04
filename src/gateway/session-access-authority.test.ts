@@ -118,13 +118,15 @@ function fixture(scopes = ["operator.write"], creator = "someone-else") {
     },
     prepare: async () =>
       hold(
-        await prepareGatewaySessionAccessAuthority({
-          policy: { mode: "write", requiredTool: "browser", allowOwnSessionScope: true },
-          requestParams: { sessionKey: key, agentId: "main" },
-          context,
-          client,
-          ownSessionOnly: false,
-        }),
+        (
+          await prepareGatewaySessionAccessAuthority({
+            policy: { mode: "write", requiredTool: "browser", allowOwnSessionScope: true },
+            requestParams: { sessionKey: key, agentId: "main" },
+            context,
+            client,
+            ownSessionOnly: false,
+          })
+        ).authority,
       ),
   };
 }
@@ -314,15 +316,16 @@ describe("session resource admission", () => {
     using capture = vi
       .spyOn(sessionAccess, "prepareGatewaySessionAccessAuthority")
       .mockImplementation(async (params) => {
-        const authority = await prepare(params);
+        const prepared = await prepare(params);
+        const authority = prepared.authority;
         release.mockImplementation(authority.release);
         return {
-          ...authority,
-          assertCurrent: () => {
-            authority.assertCurrent();
+          ...prepared,
+          assertPreparationCurrent: () => {
+            prepared.assertPreparationCurrent();
             test.client.connect.scopes = scopes;
           },
-          release,
+          authority: { ...authority, release },
         };
       });
     const handler = vi.fn<GatewayRequestHandler>();
@@ -482,13 +485,15 @@ describe("session resource admission", () => {
       try {
         await projection.ensureMaterialized();
         const authority = hold(
-          await prepareGatewaySessionAccessAuthority({
-            context,
-            client: test.client,
-            requestParams: { sessionKey: key },
-            policy: { mode: "write", requiredTool: "browser" },
-            ownSessionOnly: false,
-          }),
+          (
+            await prepareGatewaySessionAccessAuthority({
+              context,
+              client: test.client,
+              requestParams: { sessionKey: key },
+              policy: { mode: "write", requiredTool: "browser" },
+              ownSessionOnly: false,
+            })
+          ).authority,
         );
         const resource = hold(authority.retainSession());
         const viewer = hold(authority.retain());

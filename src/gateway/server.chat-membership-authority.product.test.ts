@@ -8,12 +8,18 @@ import { loadTranscriptEvents, replaceSessionEntry } from "../config/sessions/se
 import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
 import { historyLane } from "../config/sessions/session-transcript-worker-resources.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { acquireTestPortBlock } from "../test-utils/port-claims.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
-import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.e2e.js";
+import {
+  connectGatewayClient,
+  disconnectGatewayClient,
+  startGatewayWithClient,
+} from "./test-helpers.e2e.js";
 import { buildMockOpenAiResponsesProvider } from "./test-openai-responses-model.js";
 
 it(
@@ -56,6 +62,7 @@ it(
       });
     });
     let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
+    let administrator: Awaited<ReturnType<typeof connectGatewayClient>> | undefined;
     try {
       await new Promise<void>((resolve, reject) => {
         providerServer.once("error", reject);
@@ -70,12 +77,14 @@ it(
         "membership-authority",
       );
       const proxyUser = "membership-authority-member@example.test";
+      const proxyAdministrator = "membership-authority-administrator@example.test";
+      setUserProfileRole(ensureProfileForEmail(proxyAdministrator).id, "administrator");
       const certPath = await state.writeText("tls/cert.pem", TEST_TLS_CERT_PEM);
       const keyPath = await state.writeText("tls/key.pem", TEST_TLS_KEY_PEM);
       const trustedProxy = {
         userHeader: "x-forwarded-user",
         requiredHeaders: ["x-forwarded-proto"],
-        allowUsers: [proxyUser],
+        allowUsers: [proxyUser, proxyAdministrator],
         allowLoopback: true,
         deviceAutoApprove: {
           enabled: true,
@@ -112,13 +121,22 @@ it(
         plugins: { enabled: false, slots: { memory: "none" } },
         tools: { profile: "minimal" },
         gateway: {
-          auth: { mode: "trusted-proxy", trustedProxy },
+          auth: {
+            mode: "trusted-proxy",
+            trustedProxy,
+            identityScopes: { [proxyAdministrator]: ["operator.admin"] },
+          },
           trustedProxies: ["127.0.0.1"],
           controlUi: { allowedOrigins: ["https://control.example.com"] },
           tls: { enabled: true, autoGenerate: false, certPath, keyPath },
           roles: {
             default: "view",
             definitions: {
+              administrator: {
+                sessions: { others: "write" },
+                agents: "*",
+                scopes: ["operator.admin"],
+              },
               view: {
                 sessions: { others: "view" },
                 agents: "*",
@@ -135,7 +153,7 @@ it(
         portClaim,
         clientName: GATEWAY_CLIENT_NAMES.CONTROL_UI,
         mode: GATEWAY_CLIENT_MODES.WEBCHAT,
-        auth: { mode: "trusted-proxy", trustedProxy },
+        auth: cfg.gateway.auth,
         edgeAuthHeaders: {
           "x-forwarded-for": "203.0.113.50",
           "x-forwarded-proto": "https",
@@ -147,6 +165,22 @@ it(
         scopes: ["operator.read", "operator.write"],
       });
       await gateway.server.startupSettled;
+      administrator = await connectGatewayClient({
+        url: `wss://127.0.0.1:${gateway.port}`,
+        clientName: GATEWAY_CLIENT_NAMES.CONTROL_UI,
+        mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+        edgeAuthHeaders: {
+          "x-forwarded-for": "203.0.113.51",
+          "x-forwarded-proto": "https",
+          "x-forwarded-user": proxyAdministrator,
+        },
+        origin: "https://control.example.com",
+        tlsFingerprint: new X509Certificate(TEST_TLS_CERT_PEM).fingerprint256,
+        scopes: ["operator.read", "operator.write"],
+        deviceIdentity: loadOrCreateDeviceIdentity({
+          path: state.statePath("test-device-identities", "administrator.sqlite"),
+        }),
+      });
       const self = await gateway.client.request<UsersSelfResult>("users.self", {});
       const memberProfileId = self.profile.id;
       const sessionKey = `agent:main:member-authority-${randomUUID()}`;
@@ -273,8 +307,8 @@ it(
       expect(requests).toHaveLength(1);
       expect(providerErrors).toEqual([]);
 
-      // Match the seeded QA matrix with one assembled Gateway and provider. Reset through
-      // the public lifecycle owner between cells so each starts with empty owner histories.
+      // Reset through a separate administrator; member turns must retain their narrow scopes.
+      // The public lifecycle owner gives each matrix cell empty owner histories.
       let resetGlobalSessions = false;
       for (const [first, second] of [
         ["main", "work"],
@@ -283,7 +317,9 @@ it(
         for (const withAttachment of [false, true]) {
           if (resetGlobalSessions) {
             for (const agentId of [first, second]) {
-              await gateway.client.request("sessions.reset", { key: "global", agentId });
+              await expect(
+                administrator.request("sessions.reset", { key: "global", agentId }),
+              ).resolves.toMatchObject({ ok: true });
               await expect(
                 gateway.client.request("chat.history", { sessionKey: "global", agentId }),
               ).resolves.toMatchObject({ messages: [] });
@@ -373,9 +409,15 @@ it(
       }
     } finally {
       try {
-        if (gateway) {
-          await disconnectGatewayClient(gateway.client);
-          await gateway.server.close({ reason: "membership authority proof complete" });
+        try {
+          if (administrator) {
+            await disconnectGatewayClient(administrator);
+          }
+        } finally {
+          if (gateway) {
+            await disconnectGatewayClient(gateway.client);
+            await gateway.server.close({ reason: "membership authority proof complete" });
+          }
         }
       } finally {
         providerServer.closeAllConnections();

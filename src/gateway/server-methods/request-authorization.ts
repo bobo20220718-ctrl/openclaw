@@ -56,6 +56,7 @@ export async function authorizeGatewayRequestPreDispatch(params: {
   expectedProfileBinding?: ExpectedProfileBinding;
   hasCurrentClientAuthority?: () => boolean;
   assertInvocationCurrent?: () => void;
+  assertPreparationCurrent?: () => void;
   markSessionSubscribePhase?: (phase: SessionSubscribePhase) => void;
   consumeSessionTurn?: {
     target: { sessionKey: string; agentId?: string; sessionId: string };
@@ -67,6 +68,8 @@ export async function authorizeGatewayRequestPreDispatch(params: {
   sessionMutationAuthorization?: SessionMutationAuthorization;
   sessionAccessAuthority?: GatewaySessionAccessAuthority;
 }> {
+  const assertPreparationCurrent =
+    params.assertPreparationCurrent ?? params.assertInvocationCurrent;
   const signal = params.methodRegistry.isObservation(params.method)
     ? getAsyncWorkSignal()
     : undefined;
@@ -126,7 +129,7 @@ export async function authorizeGatewayRequestPreDispatch(params: {
     }
     try {
       params.expectedProfileBinding?.assertCurrent();
-      params.assertInvocationCurrent?.();
+      assertPreparationCurrent?.();
     } catch (error) {
       if (error instanceof SessionMutationAuthorizationChangedError) {
         return { error: error.error };
@@ -182,7 +185,7 @@ export async function authorizeGatewayRequestPreDispatch(params: {
       sessionScope: scopeAuthorization.sessionScope,
     };
     const assertSessionInvocationCurrent = () => {
-      params.assertInvocationCurrent?.();
+      assertPreparationCurrent?.();
       assertChatRoutingCurrent?.();
     };
     const authorizeSession = (sessionRowRead?: SessionRowReadView) => {
@@ -299,7 +302,7 @@ export async function authorizeGatewayRequestPreDispatch(params: {
     let sessionAccessAuthority: GatewaySessionAccessAuthority | undefined;
     if (sessionPolicy) {
       try {
-        sessionAccessAuthority = await prepareGatewaySessionAccessAuthority({
+        const preparedAccess = await prepareGatewaySessionAccessAuthority({
           policy: sessionPolicy,
           requestParams: params.requestParams,
           client: params.client ?? null,
@@ -307,9 +310,11 @@ export async function authorizeGatewayRequestPreDispatch(params: {
           ownSessionOnly: scopeAuthorization.sessionScope === "operator.sessions.write",
           hasCurrentClientAuthority: params.hasCurrentClientAuthority,
           assertInvocationCurrent: params.assertInvocationCurrent,
+          assertPreparationCurrent,
         });
+        sessionAccessAuthority = preparedAccess.authority;
         params.expectedProfileBinding?.assertCurrent();
-        sessionAccessAuthority.assertCurrent();
+        preparedAccess.assertPreparationCurrent();
       } catch (error) {
         sessionAccessAuthority?.release();
         if (error instanceof SessionMutationAuthorizationChangedError) {

@@ -16,6 +16,7 @@ import {
   authorizeOwnSessionMutation,
   type SessionSharingTarget,
 } from "./session-sharing-policy.js";
+import type { PreparedSessionSharingProfiles } from "./session-sharing-read.js";
 import type { SessionMutationTarget } from "./session-sharing-target-input.js";
 import type { GatewaySessionStoreDiscoveryCache } from "./session-utils-store-candidates.js";
 import type { GatewaySessionStoreCache } from "./session-utils-store-lookup.js";
@@ -32,6 +33,7 @@ export type SessionMutationAuthorizationParams = {
   sessionScope?: SessionOperatorScope;
   sessionRowRead?: SessionRowReadView;
   preparedSharing?: PreparedMutationSharing;
+  preparedProfiles?: PreparedSessionSharingProfiles;
 };
 
 export type AuthorizedSessionMutationTarget = SessionMutationTarget & {

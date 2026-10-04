@@ -7,13 +7,14 @@ import { removeSessionMember as removeSessionMemberSync } from "../config/sessio
 import { historyLane } from "../config/sessions/session-transcript-worker-resources.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lifecycle.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
+import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type {
   GatewayRequestContext,
   SessionMutationAuthorization,
 } from "./server-methods/types.js";
 import { resolveSessionMutationAuthorizationAsync } from "./session-sharing-authorization-async.js";
-import { roleClient, rolePolicyConfig } from "./session-sharing.test-utils.js";
+import { roleClient, rolePolicyConfig, sharingPolicyClient } from "./session-sharing.test-utils.js";
 import { resolveGatewaySessionStoreTarget } from "./session-utils-store-lookup.js";
 import { withQualifiedGatewaySessionEntry } from "./session-utils-store.js";
 
@@ -343,12 +344,21 @@ it.each(["membership", "owner", "routing", "policy", "unrelated-config"] as cons
   },
 );
 
-it.each(["role", "agent", "sandbox"] as const)(
+it.each(["role", "agent", "sandbox", "unprepared-role"] as const)(
   "rechecks prepared %s policy at the next worker admission",
   async (change) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       let cfg = rolePolicyConfig();
-      const client = roleClient("view", "policy-member");
+      const client =
+        change === "unprepared-role"
+          ? sharingPolicyClient({
+              user: ensureProfileForEmail("unprepared-member@example.test").id,
+            })
+          : roleClient("view", "policy-member");
+      if (change === "unprepared-role") {
+        setUserProfileRole(client.authenticatedUserProfile!.profileId, "view");
+        expect(client.preparedSessionProfile).toBeUndefined();
+      }
       const scope = { agentId: "main", sessionKey: "agent:main:policy-sharing" };
       replaceSessionEntrySync(scope, {
         sessionId: "policy-current",
@@ -360,14 +370,23 @@ it.each(["role", "agent", "sandbox"] as const)(
         identityId: client.authenticatedUserProfile!.profileId,
         addedBy: "another-profile",
       });
-      const result = await resolveSessionMutationAuthorizationAsync({
-        client,
-        method: "chat.send",
-        requestParams: scope,
-        context: { getRuntimeConfig: () => cfg } as GatewayRequestContext,
-      });
-      expect(result.error).toBeNull();
-      if (change === "role") {
+      const host = observeHostDataSql();
+      let authorization: SessionMutationAuthorization;
+      try {
+        const result = await resolveSessionMutationAuthorizationAsync({
+          client,
+          method: "chat.send",
+          requestParams: scope,
+          context: { getRuntimeConfig: () => cfg } as GatewayRequestContext,
+        });
+        expect(result.error, "prepared role authorization").toBeNull();
+        authorization = result.authorization!;
+        await authorization.withCurrent!(() => authorization.assertCurrent());
+        expect(host.queries).toEqual([]);
+      } finally {
+        host.restore();
+      }
+      if (change === "role" || change === "unprepared-role") {
         setUserProfileRole(client.authenticatedUserProfile!.profileId, "none");
       } else {
         const roles = cfg.gateway!.roles!;
@@ -389,8 +408,11 @@ it.each(["role", "agent", "sandbox"] as const)(
         };
       }
       const effect = vi.fn();
-      await expect(result.authorization!.withCurrent!(effect)).rejects.toThrow();
+      await expect(authorization.withCurrent!(effect)).rejects.toThrow();
       expect(effect).not.toHaveBeenCalled();
+      if (change === "unprepared-role") {
+        expect(client.preparedSessionProfile).toBeUndefined();
+      }
     });
   },
 );

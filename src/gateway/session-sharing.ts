@@ -109,6 +109,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
   error: ErrorShape | null;
 } {
   let params = request;
+  params.preparedProfiles?.readCurrent();
   if (params.method === "chat.send") {
     const normalized = resolveChatSendAuthorizationParams(
       params.context.getRuntimeConfig(),
@@ -164,6 +165,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
       ? prepareProjectedSessionSharing({
           cfg,
           client: params.client,
+          profiles: params.preparedProfiles,
           isMember: (_target, id) =>
             consumingSharing!.members.some((member) => member.identityId === id),
         })
@@ -408,6 +410,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
         const previous = consumingSharing;
         consumingSharing = prepared;
         try {
+          params.preparedProfiles?.readCurrent();
           prepared.assertCurrent();
           const result = consume();
           if (isPromiseLike(result)) {
@@ -464,6 +467,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
         currentLookupCaches?: SessionSharingLookupCaches,
         ensuredSessionId?: string,
       ) => {
+        params.preparedProfiles?.readCurrent();
         if (expected?.absentTarget && !expected.created) {
           const currentRoute = consumingSharing
             ? consumingSharing.storageTarget
@@ -590,6 +594,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
         ...(params.method === "chat.send" && authorizedTargets.length === 1 && !talkSessionTarget
           ? {
               withCurrent: async <T>(consume: () => T): Promise<T> => {
+                params.preparedProfiles?.readCurrent();
                 const expected = authorizedTargets[0]!;
                 const cfg = params.context.getRuntimeConfig();
                 const assertRoutingCurrent = captureSessionMutationRouting(cfg, () =>

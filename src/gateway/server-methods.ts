@@ -345,6 +345,12 @@ export async function handleGatewayRequest(
           runtimeParticipant?.assertCurrent();
           profileBinding?.assertCurrent();
           assertOperatorCurrent();
+          requestMutationAuthority.assertCurrent();
+        },
+        assertPreparationCurrent: () => {
+          runtimeParticipant?.assertCurrent();
+          profileBinding?.assertCurrent();
+          assertOperatorCurrent();
           requestMutationAuthority.assertPreparationCurrent();
         },
       });
@@ -379,6 +385,11 @@ export async function handleGatewayRequest(
             runtimeParticipant?.assertCurrent();
             assertOperatorCurrent();
             requestMutationAuthority.assertCurrent();
+          },
+          assertPreparationCurrent: () => {
+            runtimeParticipant?.assertCurrent();
+            assertOperatorCurrent();
+            requestMutationAuthority.assertPreparationCurrent();
           },
           consumeSessionTurn: {
             target: { ...target },

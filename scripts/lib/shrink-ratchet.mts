@@ -37,6 +37,7 @@ export function parseRatchetArgs(argv: string[]) {
 function readGitText(root: string, args: string[]) {
   return execFileSync("git", args, {
     cwd: root,
+    maxBuffer: GIT_MAX_BUFFER,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
   });

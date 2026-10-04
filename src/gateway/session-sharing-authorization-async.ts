@@ -1,6 +1,7 @@
 import { resolveRequestedSessionAgentInput } from "./session-request-agent.js";
 import { withSessionSharingTarget } from "./session-sharing-policy.js";
 import { captureSessionMutationRouting } from "./session-sharing-preparation.js";
+import { prepareSessionSharingProfiles } from "./session-sharing-read.js";
 import {
   resolveChatSendAuthorizationParams,
   resolveDirectSessionTargets,
@@ -36,17 +37,21 @@ export async function resolveSessionMutationAuthorizationAsync(
   }
   const cfg = params.context.getRuntimeConfig();
   const assertRoutingCurrent = captureSessionMutationRouting(cfg);
+  const preparedProfiles = await prepareSessionSharingProfiles(params.client);
+  params.assertInvocationCurrent?.();
   return withSessionSharingTarget(
     { cfg, sessionKey: target.sessionKey, agentId: input.value },
     (read) => {
       const assertCurrent = () => {
         params.assertInvocationCurrent?.();
+        preparedProfiles.readCurrent();
         read.assertCurrent();
         assertRoutingCurrent(params.context.getRuntimeConfig());
       };
       assertCurrent();
       return resolveSessionMutationAuthorization({
         ...params,
+        preparedProfiles,
         preparedSharing: { ...read, assertCurrent },
       });
     },

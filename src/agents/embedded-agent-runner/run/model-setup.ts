@@ -52,7 +52,7 @@ class NativeSessionOwnershipReadRaceError extends Error {}
 async function prepareNativeSessionRuntime(
   runParams: RunEmbeddedAgentInternalParams,
   harness: AgentHarness,
-  admission: ReturnType<typeof assertAgentHarnessRunAdmission>,
+  admission: Awaited<ReturnType<typeof assertAgentHarnessRunAdmission>>,
   assertCallerCurrent: () => void,
 ): Promise<PreparedNativeSessionRuntime | undefined> {
   const pinnedHarnessId = resolveSessionPinnedHarnessId(admission?.entry);
@@ -216,7 +216,7 @@ async function prepareNativeSessionRuntime(
 export async function resolveEmbeddedRunModelSetup(params: {
   assertCurrent: () => void;
   runParams: RunEmbeddedAgentInternalParams;
-  sessionAdmission?: ReturnType<typeof assertAgentHarnessRunAdmission>;
+  sessionAdmission?: Awaited<ReturnType<typeof assertAgentHarnessRunAdmission>>;
   provider: string;
   modelId: string;
   agentDir: string;

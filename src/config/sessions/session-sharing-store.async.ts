@@ -50,7 +50,7 @@ export async function runSessionCollaborationWrite<
   prepare?: (
     operation: Pick<SqliteWorkerStore<SessionSharingWorkerOperations>, "execute">,
     scope: SessionAccessScope,
-  ) => Promise<void>,
+  ) => Promise<void | SessionSharingWorkerOperations[Key]["input"]>,
   uncertainCategoryKeys?: () => readonly string[] | undefined,
 ): Promise<T> {
   const resolved = resolveSqliteScope(scope);
@@ -117,7 +117,10 @@ export async function runSessionCollaborationWrite<
             try {
               return await worker.run(async (operation) => {
                 if (prepare) {
-                  await prepare(operation, commandScope);
+                  const prepared = await prepare(operation, commandScope);
+                  if (prepared) {
+                    capturedCommand.input = structuredClone({ ...prepared, scope: commandScope });
+                  }
                 }
                 assertQueuedCurrent();
                 mutationDispatched = capturedCommand.type !== "category.prepare";
@@ -140,7 +143,10 @@ export async function runSessionCollaborationWrite<
               ) {
                 // The broker has joined physical settlement. Fence old authority until the
                 // projection's existing read worker reconciles the committed store, without replay.
-                if (capturedCommand.type === "category.apply") {
+                if (
+                  capturedCommand.type === "category.apply" ||
+                  capturedCommand.type === "involvement"
+                ) {
                   discardCommittedSessionEntryCache(database.db);
                 }
                 const categoryKeys =

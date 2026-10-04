@@ -7,15 +7,20 @@ import { expect, it, vi } from "vitest";
 import type { UsersSelfResult } from "../../packages/gateway-protocol/src/schema/users.js";
 import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
 import { TEST_TLS_CERT_PEM, TEST_TLS_KEY_PEM } from "../../test/helpers/tls-fixture.js";
-import { loadTranscriptEvents, replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import {
+  listSessionPendingInputs,
+  loadTranscriptEvents,
+  replaceSessionEntry,
+} from "../config/sessions/session-accessor.js";
 import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
 import { historyLane } from "../config/sessions/session-transcript-worker-resources.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
 import { readPersistedMediaFacts } from "../media/media-facts.js";
 import { resolveInboundMediaReference } from "../media/media-reference.js";
-import { createDeferredCore } from "../shared/deferred.js";
-import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
+import { createDeferredCore, type Deferred } from "../shared/deferred.js";
+import { readUserProfileIdentity } from "../state/user-profile-list.js";
+import { linkEmail, setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { acquireTestPortBlock } from "../test-utils/port-claims.js";
@@ -27,8 +32,46 @@ import {
 } from "./test-helpers.e2e.js";
 import { buildMockOpenAiResponsesProvider } from "./test-openai-responses-model.js";
 
+function holdSessionAuthorizationRead(sessionKey: string) {
+  const readCaptured = createDeferredCore();
+  const resumeRead = createDeferredCore();
+  const read = historyLane.pool.run.bind(historyLane.pool);
+  let held = false;
+  const workerRead = vi
+    .spyOn(historyLane.pool, "run")
+    .mockImplementation(async (prepare, options) => {
+      if (typeof prepare !== "function") {
+        return read(prepare, options);
+      }
+      let matchesAuthorization = false;
+      const reply = await read(async () => {
+        const input = await prepare();
+        matchesAuthorization =
+          input.kind === "session-exact-entries" &&
+          input.projection === "full" &&
+          input.includeMembers === true &&
+          input.includeAuthorization === true &&
+          input.sessionKeys.length === 1 &&
+          input.sessionKeys[0] === sessionKey;
+        return input;
+      }, options);
+      if (!held && matchesAuthorization) {
+        held = true;
+        readCaptured.resolve();
+        await resumeRead.promise;
+      }
+      return reply;
+    });
+  return {
+    entered: readCaptured.promise,
+    resume: () => resumeRead.resolve(),
+    wasHeld: () => held,
+    restore: () => workerRead.mockRestore(),
+  };
+}
+
 it(
-  "carries current membership and explicit global ownership through transcript persistence and agent dispatch",
+  "carries current caller, membership and global ownership through transcript persistence and agent dispatch",
   { timeout: 90_000 },
   async () => {
     const state = await createOpenClawTestState({
@@ -49,15 +92,41 @@ it(
     const requests: string[] = [];
     const providerErrors: unknown[] = [];
     let providerReply = "Authorized member reply.";
+    const providerHolds: Array<{
+      message: string;
+      entered: Deferred;
+      resume: Deferred;
+      claimed: boolean;
+    }> = [];
+    const holdProviderResponse = (message: string) => {
+      const hold = {
+        message,
+        entered: createDeferredCore(),
+        resume: createDeferredCore(),
+        claimed: false,
+      };
+      providerHolds.push(hold);
+      return hold;
+    };
     const providerServer = createServer((request, response) => {
       void (async () => {
         const chunks: Buffer[] = [];
         for await (const chunk of request) {
           chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         }
-        requests.push(Buffer.concat(chunks).toString("utf8"));
+        const body = Buffer.concat(chunks).toString("utf8");
+        requests.push(body);
+        const reply = providerReply;
+        const hold = providerHolds.find(
+          (candidate) => !candidate.claimed && body.includes(candidate.message),
+        );
+        if (hold) {
+          hold.claimed = true;
+          hold.entered.resolve();
+          await hold.resume.promise;
+        }
         writeOpenAiResponsesText(response, {
-          text: providerReply,
+          text: reply,
           messageId: `msg_${randomUUID()}`,
           responseId: `resp_${randomUUID()}`,
         });
@@ -68,6 +137,7 @@ it(
     });
     let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
     let administrator: Awaited<ReturnType<typeof connectGatewayClient>> | undefined;
+    let backingClient: Awaited<ReturnType<typeof connectGatewayClient>> | undefined;
     try {
       await new Promise<void>((resolve, reject) => {
         providerServer.once("error", reject);
@@ -83,13 +153,14 @@ it(
       );
       const proxyUser = "membership-authority-member@example.test";
       const proxyAdministrator = "membership-authority-administrator@example.test";
+      const proxyBacking = "membership-authority-backing@example.test";
       setUserProfileRole(ensureProfileForEmail(proxyAdministrator).id, "administrator");
       const certPath = await state.writeText("tls/cert.pem", TEST_TLS_CERT_PEM);
       const keyPath = await state.writeText("tls/key.pem", TEST_TLS_KEY_PEM);
       const trustedProxy = {
         userHeader: "x-forwarded-user",
         requiredHeaders: ["x-forwarded-proto"],
-        allowUsers: [proxyUser, proxyAdministrator],
+        allowUsers: [proxyUser, proxyAdministrator, proxyBacking],
         allowLoopback: true,
         deviceAutoApprove: {
           enabled: true,
@@ -228,35 +299,7 @@ it(
       const transcriptBeforeDeniedTurn = structuredClone(await loadTranscriptEvents(scope));
       for (const change of ["membership revoked", "session replaced"] as const) {
         await addSessionMember(scope, { identityId: memberProfileId, addedBy: owner.id });
-        const readCaptured = createDeferredCore();
-        const resumeRead = createDeferredCore();
-        const read = historyLane.pool.run.bind(historyLane.pool);
-        let held = false;
-        const workerRead = vi
-          .spyOn(historyLane.pool, "run")
-          .mockImplementation(async (prepare, options) => {
-            if (typeof prepare !== "function") {
-              return read(prepare, options);
-            }
-            let matchesDeniedAuthorization = false;
-            const reply = await read(async () => {
-              const input = await prepare();
-              matchesDeniedAuthorization =
-                input.kind === "session-exact-entries" &&
-                input.projection === "full" &&
-                input.includeMembers === true &&
-                input.includeAuthorization === true &&
-                input.sessionKeys.length === 1 &&
-                input.sessionKeys[0] === sessionKey;
-              return input;
-            }, options);
-            if (!held && matchesDeniedAuthorization) {
-              held = true;
-              readCaptured.resolve();
-              await resumeRead.promise;
-            }
-            return reply;
-          });
+        const heldRead = holdSessionAuthorizationRead(sessionKey);
         const denied = gateway.client.request("chat.send", {
           sessionKey,
           message: "This in-flight revoked member turn must have no effects.",
@@ -265,7 +308,7 @@ it(
         });
         try {
           await Promise.race([
-            readCaptured.promise,
+            heldRead.entered,
             denied.then(() => {
               throw new Error("chat.send completed before its authorization read was held");
             }),
@@ -282,14 +325,14 @@ it(
               createdActor: { type: "human", source: "profile", id: owner.id },
             });
           }
-          resumeRead.resolve();
+          heldRead.resume();
           await expect(denied).rejects.toMatchObject({ code: "INVALID_REQUEST" });
         } finally {
-          resumeRead.resolve();
+          heldRead.resume();
           await Promise.allSettled([denied]);
-          workerRead.mockRestore();
+          heldRead.restore();
         }
-        expect(held).toBe(true);
+        expect(heldRead.wasHeld()).toBe(true);
         expect(await loadTranscriptEvents(scope)).toEqual(transcriptBeforeDeniedTurn);
         if (change === "session replaced") {
           expect(
@@ -459,11 +502,191 @@ it(
           }
         }
       }
+
+      const profileScope = {
+        agentId: "main",
+        sessionKey: `agent:main:profile-authority-${randomUUID()}`,
+        sessionId: `profile-authority-${randomUUID()}`,
+      };
+      await replaceSessionEntry(profileScope, {
+        sessionId: profileScope.sessionId,
+        updatedAt: Date.now(),
+        visibility: "shared",
+        createdActor: { type: "human", source: "profile", id: memberProfileId },
+      });
+      const replacement = ensureProfileForEmail("profile-replacement@example.test");
+      const aliasEmail = "profile-custody-alias@example.test";
+      const aliasSource = ensureProfileForEmail(aliasEmail);
+      const beforeProfileReplacement = await loadTranscriptEvents(profileScope);
+      const beforeProfileRequests = requests.length;
+      const profileRead = holdSessionAuthorizationRead(profileScope.sessionKey);
+      const replaced = gateway.client.request("chat.send", {
+        sessionKey: profileScope.sessionKey,
+        message: "This replaced caller must not reach the transcript or provider.",
+        deliver: false,
+        idempotencyKey: randomUUID(),
+      });
+      try {
+        await Promise.race([
+          profileRead.entered,
+          replaced.then(() => {
+            throw new Error("Profile-bound chat completed before its worker read was held");
+          }),
+        ]);
+        linkEmail(proxyUser, replacement.id);
+        await expect(
+          gateway.client.request<UsersSelfResult>("users.self", {}),
+        ).resolves.toMatchObject({
+          profile: { id: replacement.id },
+        });
+        profileRead.resume();
+        await expect(replaced).rejects.toMatchObject({
+          code: "FORBIDDEN",
+          message: "Gateway requester authority changed",
+        });
+      } finally {
+        profileRead.resume();
+        await Promise.allSettled([replaced]);
+        profileRead.restore();
+      }
+      expect(profileRead.wasHeld()).toBe(true);
+      expect(requests).toHaveLength(beforeProfileRequests);
+      expect(await loadTranscriptEvents(profileScope)).toEqual(beforeProfileReplacement);
+      expect(await listSessionPendingInputs(profileScope)).toEqual({ items: [], total: 0 });
+
+      // Keep both execution sources alive. Retiring either captured canonical
+      // identity revokes authority; merging another profile into the sender does not.
+      backingClient = await connectGatewayClient({
+        url: `wss://127.0.0.1:${gateway.port}`,
+        clientName: GATEWAY_CLIENT_NAMES.CONTROL_UI,
+        mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+        edgeAuthHeaders: {
+          "x-forwarded-for": "203.0.113.52",
+          "x-forwarded-proto": "https",
+          "x-forwarded-user": proxyBacking,
+        },
+        origin: "https://control.example.com",
+        tlsFingerprint: new X509Certificate(TEST_TLS_CERT_PEM).fingerprint256,
+        scopes: ["operator.read", "operator.write"],
+        deviceIdentity: loadOrCreateDeviceIdentity({
+          path: state.statePath("test-device-identities", "backing.sqlite"),
+        }),
+      });
+      const backingSelf = await backingClient.request<UsersSelfResult>("users.self", {});
+      expect(backingSelf.profile.id).not.toBe(replacement.id);
+      await addSessionMember(profileScope, {
+        identityId: backingSelf.profile.id,
+        addedBy: replacement.id,
+      });
+      const backingMessage = `PROFILE_BACKING_${randomUUID()}`;
+      const steeringMessage = `PROFILE_ACCEPTED_${randomUUID()}`;
+      const backingHold = holdProviderResponse(backingMessage);
+      const steeringHold = holdProviderResponse(steeringMessage);
+      const requestOffset = requests.length;
+      providerReply = "Accepted profile input completed.";
+      const backing = await backingClient.request<{ runId: string; status: string }>("chat.send", {
+        sessionKey: profileScope.sessionKey,
+        message: backingMessage,
+        deliver: false,
+        idempotencyKey: randomUUID(),
+      });
+      expect(backing.status).toBe("started");
+      const backingTerminal = administrator.request<{ status: string }>(
+        "agent.wait",
+        { runId: backing.runId, timeoutMs: 30_000 },
+        { timeoutMs: 35_000 },
+      );
+      await Promise.race([
+        backingHold.entered.promise,
+        backingTerminal.then((result) => {
+          throw new Error(
+            `Backing run settled before its provider hold: ${JSON.stringify(result)}`,
+          );
+        }),
+      ]);
+      const steering = await gateway.client.request<{ runId: string; status: string }>(
+        "chat.send",
+        {
+          sessionKey: profileScope.sessionKey,
+          message: steeringMessage,
+          queueMode: "steer",
+          deliver: false,
+          idempotencyKey: randomUUID(),
+        },
+      );
+      expect(steering.status).toBe("started");
+      expect(requests).toHaveLength(requestOffset + 1);
+      expect(await listSessionPendingInputs(profileScope)).toMatchObject({
+        total: 1,
+        items: [{ runId: steering.runId, state: "queued", message: { content: steeringMessage } }],
+      });
+      expect(JSON.stringify(await loadTranscriptEvents(profileScope))).not.toContain(
+        steeringMessage,
+      );
+      linkEmail(aliasEmail, replacement.id);
+      const mergedProfile = readUserProfileIdentity(aliasSource.id);
+      expect(mergedProfile).toMatchObject({
+        profileId: replacement.id,
+      });
+      expect(mergedProfile?.aliases).toContain(aliasSource.id);
+      await expect(
+        gateway.client.request<UsersSelfResult>("users.self", {}),
+      ).resolves.toMatchObject({
+        profile: { id: replacement.id },
+      });
+      const steeringTerminal = administrator.request<{ status: string }>(
+        "agent.wait",
+        { runId: steering.runId, timeoutMs: 30_000 },
+        { timeoutMs: 35_000 },
+      );
+      backingHold.resume.resolve();
+      await Promise.race([
+        steeringHold.entered.promise,
+        Promise.all([backingTerminal, steeringTerminal]).then((results) => {
+          throw new Error(`Accepted steering lost its backing run: ${JSON.stringify(results)}`);
+        }),
+      ]);
+      await expect(
+        administrator.request("agent.wait", { runId: backing.runId, timeoutMs: 100 }),
+      ).resolves.toMatchObject({ status: "timeout" });
+      expect(requests).toHaveLength(requestOffset + 2);
+      expect(requests[requestOffset + 1]).toContain(steeringMessage);
+      steeringHold.resume.resolve();
+      await expect(backingTerminal).resolves.toMatchObject({ status: "ok" });
+      await expect(steeringTerminal).resolves.toMatchObject({ status: "ok" });
+      const settledMessages = (await loadTranscriptEvents(profileScope)).flatMap((event) => {
+        const message = asOptionalRecord(asOptionalRecord(event)?.message);
+        return message ? [message] : [];
+      });
+      for (const input of [backingMessage, steeringMessage]) {
+        expect(
+          settledMessages.filter(
+            (message) => message.role === "user" && JSON.stringify(message.content).includes(input),
+          ),
+        ).toHaveLength(1);
+      }
+      expect(
+        settledMessages.filter(
+          (message) =>
+            message.role === "assistant" && JSON.stringify(message.content).includes(providerReply),
+        ),
+      ).toHaveLength(2);
+      expect(await listSessionPendingInputs(profileScope)).toEqual({ items: [], total: 0 });
+      expect(providerErrors).toEqual([]);
     } finally {
+      for (const hold of providerHolds) {
+        hold.resume.resolve();
+      }
       try {
         try {
-          if (administrator) {
-            await disconnectGatewayClient(administrator);
+          try {
+            if (backingClient) {
+              await disconnectGatewayClient(backingClient);
+            }
+          } finally {
+            if (administrator) {
+              await disconnectGatewayClient(administrator);
+            }
           }
         } finally {
           if (gateway) {

@@ -86,7 +86,7 @@ export function deleteIncognitoSessionLifecycle(
               lifecycleRevision: target.entry.lifecycleRevision ?? null,
             },
           ],
-          assertCurrent: current.assertCurrent,
+          assertCurrent: () => current.assertCurrent(),
         });
         const result = await actor.sessions.lifecycle(
           current,
@@ -194,7 +194,10 @@ export function reclaimIncognitoSessionLifecycle(
             };
           },
         ),
-      { incognito: actor, additionalIdentities: plan.deletePlans.map((plan) => plan.sessionId) },
+      {
+        incognito: actor,
+        additionalIdentities: plan.deletePlans.map((deletePlan) => deletePlan.sessionId),
+      },
     );
   });
 }

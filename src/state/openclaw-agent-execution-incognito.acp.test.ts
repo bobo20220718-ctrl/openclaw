@@ -4,7 +4,7 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { IncognitoAcpSessionAccess } from "../acp/runtime/session-meta-incognito.types.js";
-import { readIncognitoAcpSessionStoreEntry } from "../acp/runtime/session-meta-read.js";
+import { readAcpSessionEntryAsync } from "../acp/runtime/session-meta-read.js";
 import { readAcpSessionMetaForEntries } from "../acp/runtime/session-meta-readonly.js";
 import * as metadataReader from "../acp/runtime/session-meta-readonly.js";
 import { upsertAcpSessionMeta } from "../acp/runtime/session-meta-write.js";
@@ -61,7 +61,7 @@ it("orders set, link and clear through both owners with zero caller-thread SQL",
     authority,
     ...input
   }: Parameters<IncognitoAcpSessionAccess["readEntry"]>[0]) =>
-    (await readIncognitoAcpSessionStoreEntry(input, { actor, authority }))?.entry;
+    (await readAcpSessionEntryAsync(input, { actor, authority }))?.entry;
   const upsertComposed = ({
     authority,
     ...input

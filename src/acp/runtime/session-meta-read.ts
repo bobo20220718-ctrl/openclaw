@@ -30,15 +30,11 @@ export type AcpSessionEntryReadInput = AcpSessionReadContextInput & {
 /** Retain the canonical session source through its lifecycle-bound ACP metadata join. */
 export async function readAcpSessionEntryAsync(
   params: AcpSessionEntryReadInput,
+  incognito?: { actor: IncognitoAgentDatabaseExecution; authority: IncognitoSessionAuthority },
 ): Promise<AcpSessionStoreEntry | null> {
-  return withAcpSessionEntryRead(params, (entry) => entry);
-}
-
-/** Internal composition for activation; the shipped SDK reader keeps its existing signature. */
-export async function readIncognitoAcpSessionStoreEntry(
-  params: AcpSessionEntryReadInput,
-  incognito: { actor: IncognitoAgentDatabaseExecution; authority: IncognitoSessionAuthority },
-): Promise<AcpSessionStoreEntry | null> {
+  if (!incognito) {
+    return withAcpSessionEntryRead(params, (entry) => entry);
+  }
   const { actor, authority } = incognito;
   actor.assertCurrent();
   authority.assertCurrent();

@@ -16,8 +16,8 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CANDIDATE_SHA: b5533ac1c955d64e19705ae2d0917ff5ead72f38
-  BASE_SHA: aa1df7bf0d7e2d80d9ba1141f0a54b8b5147efac
+  CANDIDATE_SHA: e9dd74b55fd92227b4da8d5ea8a248d0e7dca304
+  BASE_SHA: f3698fa2a9ff4dac7d536e70cdf7b77fca5a826b
   CONTRIBUTOR_SHA: 17487454baa68c8901b1c9c84393135e93748a55
   NODE_VERSION: "24.21.0"
 
@@ -26,9 +26,6 @@ jobs:
     if: github.ref == 'refs/heads/test/pr-156941-isolated-proof'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      PROOF_DIR: ${{ runner.temp }}/pr-156941-proof
-      SQLMEASURE_PRIVATE_DIR: ${{ runner.temp }}/pr-156941-sqlmeasure-private
     steps:
       - name: Validate immutable proof inputs
         shell: bash
@@ -37,6 +34,9 @@ jobs:
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]
+          PROOF_DIR="$RUNNER_TEMP/pr-156941-proof"
+          SQLMEASURE_PRIVATE_DIR="$RUNNER_TEMP/pr-156941-sqlmeasure-private"
+          printf 'PROOF_DIR=%s\nSQLMEASURE_PRIVATE_DIR=%s\n' "$PROOF_DIR" "$SQLMEASURE_PRIVATE_DIR" >> "$GITHUB_ENV"
           mkdir -p "$PROOF_DIR"
 
       - name: Checkout exact candidate without retained credentials
@@ -110,6 +110,16 @@ jobs:
           cache-mode: "off"
           semantic-checks: "true"
 
+      - name: Install ripgrep for baseline ratchets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v rg >/dev/null 2>&1; then
+            exit 0
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ripgrep
+
       - name: Build candidate
         env:
           OUTPUT_SOURCE_MAPS: "1"
@@ -117,6 +127,49 @@ jobs:
         run: |
           set -euo pipefail
           /usr/bin/time -v -o "$PROOF_DIR/build.time.txt" pnpm build 2>&1 | tee "$PROOF_DIR/build.log"
+
+      - name: Run focused candidate and import-closure proof
+        env:
+          OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: ${{ runner.temp }}/pr-156941-positive-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/time -v -o "$PROOF_DIR/focused.time.txt" \
+            node scripts/run-vitest.mjs \
+            src/gateway/server.chat-membership-authority.product.test.ts \
+            src/gateway/server.chat.gateway-server-chat-b.test.ts \
+            src/gateway/operator-role-policy.test.ts \
+            src/acp/control-plane/spawn.test.ts \
+            src/gateway/server-methods/plugins.lifecycle-contention.test.ts \
+            src/gateway/server-plugin-in-process-dispatch.session-scopes.test.ts \
+            src/gateway/server/ws-connection/authenticated-request-dispatch.mutation-authority.test.ts \
+            src/gateway/session-utils.queued-collector.test.ts \
+            src/gateway/server.chat.orphaned-recovery.test.ts \
+            src/gateway/server-methods/chat.directive-tags.test.ts \
+            src/auto-reply/reply/agent-runner-required-maintenance.pending-input.test.ts \
+            test/e2e/qa-lab/runtime/gateway-rpc-chat.e2e.test.ts \
+            src/gateway/server-methods/chat-send-admission.reads.test.ts \
+            src/gateway/server-methods/chat-send-global-identity.test.ts \
+            src/gateway/server-methods/chat-send-profile-binding.test.ts \
+            src/gateway/session-sharing.worker.test.ts \
+            src/gateway/session-utils-store-lookup.test.ts \
+            src/config/sessions/combined-store-gateway.test.ts \
+            src/gateway/server-worker-placement-reclaim.preparation.test.ts \
+            src/gateway/server-worker-placement-reclaim.test.ts \
+            src/agents/embedded-agent-runner/run/model-setup.ownership.test.ts \
+            src/gateway/server-methods/chat-send-work-admission.test.ts \
+            src/gateway/server-methods/chat-send-pending-inputs.test.ts \
+            src/gateway/server-methods/chat-send-steering-custody.test.ts \
+            src/gateway/server-methods/sessions.initial-transfer-custody.test.ts \
+            src/gateway/server-methods.session-pending-stop.test.ts \
+            src/gateway/server-methods/chat.native-runtime-consent.test.ts \
+            src/gateway/server-methods/session-recovery-continuation.test.ts \
+            src/gateway/server.sessions.recover.test.ts \
+            test/scripts/runtime-process-build-graph.test.ts \
+            src/auto-reply/reply/get-reply.imports.test.ts \
+            src/state/openclaw-state.worker.imports.test.ts \
+            --maxWorkers=1 --reporter=default --reporter=json \
+            --outputFile="$PROOF_DIR/focused.json" 2>&1 | tee "$PROOF_DIR/focused.log"
 
       - name: Calibrate main-thread and worker-thread SQL observation
         shell: bash
@@ -207,38 +260,6 @@ jobs:
           # totals + stack attribution; the focused boundary tests own the zero-SQL claim.
           PY
 
-      - name: Run focused candidate and import-closure proof
-        env:
-          OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: ${{ runner.temp }}/pr-156941-positive-cache
-        shell: bash
-        run: |
-          set -euo pipefail
-          /usr/bin/time -v -o "$PROOF_DIR/focused.time.txt" \
-            node scripts/run-vitest.mjs \
-            src/gateway/server.chat-membership-authority.product.test.ts \
-            src/gateway/server-methods/chat-send-admission.reads.test.ts \
-            src/gateway/server-methods/chat-send-global-identity.test.ts \
-            src/gateway/server-methods/chat-send-profile-binding.test.ts \
-            src/gateway/session-sharing.worker.test.ts \
-            src/gateway/session-utils-store-lookup.test.ts \
-            src/config/sessions/combined-store-gateway.test.ts \
-            src/gateway/server-worker-placement-reclaim.preparation.test.ts \
-            src/gateway/server-worker-placement-reclaim.test.ts \
-            src/agents/embedded-agent-runner/run/model-setup.ownership.test.ts \
-            src/gateway/server-methods/chat-send-work-admission.test.ts \
-            src/gateway/server-methods/chat-send-pending-inputs.test.ts \
-            src/gateway/server-methods/chat-send-steering-custody.test.ts \
-            src/gateway/server-methods/sessions.initial-transfer-custody.test.ts \
-            src/gateway/server-methods.session-pending-stop.test.ts \
-            src/gateway/server-methods/chat.native-runtime-consent.test.ts \
-            src/gateway/server-methods/session-recovery-continuation.test.ts \
-            src/gateway/server.sessions.recover.test.ts \
-            test/scripts/runtime-process-build-graph.test.ts \
-            src/auto-reply/reply/get-reply.imports.test.ts \
-            src/state/openclaw-state.worker.imports.test.ts \
-            --maxWorkers=1 --reporter=default --reporter=json \
-            --outputFile="$PROOF_DIR/focused.json" 2>&1 | tee "$PROOF_DIR/focused.log"
-
       - name: Run explicit worker ratchet and Madge checks
         shell: bash
         run: |
@@ -310,8 +331,13 @@ jobs:
               : inspectRetryAndReserve();'''
           assert original_reservation in original_source, 'Original contributor source did not contain the unguarded reservation await'
 
+          acp_old = '  // Explicit metadata, including misses, keeps this synchronous resolver off SQLite.\n  let deletedAgentId = resolveDeletedAgentIdFromSessionKey(cfg, sessionKey, entry, {\n    acpMeta: null,\n  });\n  if (deletedAgentId !== null) {\n    const [acpMeta] = await readAcpSessionMetaForEntries({\n      cfg,\n      entries: [{ agentId: deletedAgentId, sessionKey: legacyKey ?? sessionKey, entry }],\n    });\n    deletedAgentId = resolveDeletedAgentIdFromSessionKey(cfg, sessionKey, entry, {\n      acpMeta: acpMeta ?? null,\n    });\n  }'
+          acp_new = '  const deletedAgentId = resolveDeletedAgentIdFromSessionKey(cfg, sessionKey, entry, {\n    acpMetadataSessionKey: legacyKey ?? sessionKey,\n  });'
+          assert acp_new in base_source, 'Pinned main did not use the claimed synchronous ACP lookup'
+
           controls = [
               ('initial-sync-lookup', load_file, load_old, load_new, sql_file, sql_title, sql_assertion, 2),
+              ('sync-acp-lookup', load_file, acp_old, acp_new, sql_file, 'prepares canonical free ACP without caller-thread SQL', 'expect(sql.queries, sql.queries.join("\\n")).toHaveLength(0);', 1),
               ('post-claim-sync-authority', pre_file, pre_old, pre_new, sql_file, sql_title, sql_assertion, 2),
               ('unjoined-callback', join_source, join_old, join_new, join_file, join_title, 'expect(released).toBeDefined();', 1),
               ('uncleared-reservation', join_source, reservation_old, reservation_new, join_file, reservation_title, 'expect(fixture.context.dedupe.has(pendingKey)).toBe(false);', 1),
@@ -382,5 +408,95 @@ jobs:
         with:
           name: pr-156941-isolated-proof-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/pr-156941-proof/
+          if-no-files-found: error
+          retention-days: 7
+
+  attribution:
+    if: github.ref == 'refs/heads/test/pr-156941-isolated-proof'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        revision: [baseline, candidate]
+    steps:
+      - name: Checkout immutable comparison revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.revision == 'baseline' && env.BASE_SHA || env.CANDIDATE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+
+      - name: Verify secretless comparison checkout
+        env:
+          EXPECTED_SHA: ${{ matrix.revision == 'baseline' && env.BASE_SHA || env.CANDIDATE_SHA }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 - <<'PYCODE'
+          import os, subprocess
+          names = ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN', 'NPM_TOKEN', 'NODE_AUTH_TOKEN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'GOOGLE_APPLICATION_CREDENTIALS', 'SSH_AUTH_SOCK')
+          assert not any(os.environ.get(name) for name in names), 'Unexpected task credential'
+          result = subprocess.run(['git', 'config', '--get-regexp', r'http\..*extraheader'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+          assert result.returncode == 1, 'Git authentication remained after checkout'
+          PYCODE
+
+      - name: Setup Node and pnpm
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.21.0"
+          install-bun: "false"
+          cache-mode: "off"
+          semantic-checks: "true"
+
+      - name: Build comparison revision
+        shell: bash
+        run: pnpm build
+
+      - name: Repeat original failing files in their original internal order
+        env:
+          COMPARISON_REVISION: ${{ matrix.revision }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json, os, pathlib, subprocess, time
+          root = pathlib.Path(os.environ['RUNNER_TEMP'], 'pr-156941-attribution')
+          root.mkdir()
+          files = [
+              'src/acp/control-plane/spawn.test.ts',
+              'src/gateway/server-methods/plugins.lifecycle-contention.test.ts',
+              'test/e2e/qa-lab/runtime/channel-progress-presentation.e2e.test.ts',
+          ]
+          result = {'revision': os.environ['COMPARISON_REVISION'], 'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), 'runs': []}
+          failed = False
+          for file_index, file in enumerate(files):
+              for attempt in range(1, 6):
+                  label = f'{file_index}-{attempt}'
+                  env = dict(os.environ)
+                  env['OPENCLAW_VITEST_FS_MODULE_CACHE_PATH'] = str(root.parent / f'attribution-{label}-cache')
+                  start = time.monotonic()
+                  with (root / f'{label}.log').open('w') as log:
+                      run = subprocess.run(['node', 'scripts/run-vitest.mjs', file, '--maxWorkers=1', '--reporter=default', '--reporter=json', f'--outputFile={root / (label + ".json")}'], env=env, stdout=log, stderr=subprocess.STDOUT)
+                  failed |= run.returncode != 0
+                  result['runs'].append({'file': file, 'attempt': attempt, 'exitCode': run.returncode, 'wallSeconds': round(time.monotonic() - start, 3)})
+                  (root / 'comparison.json').write_text(json.dumps(result, indent=2) + '\n')
+                  diagnostics = pathlib.Path('.artifacts/channel-progress-presentation')
+                  if diagnostics.is_dir():
+                      import shutil
+                      shutil.copytree(diagnostics, root / f'{label}-channel-diagnostics')
+          raise SystemExit(1 if failed else 0)
+          PYCODE
+
+      - name: Upload attribution evidence including failed runs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr-156941-attribution-${{ matrix.revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr-156941-attribution/
           if-no-files-found: error
           retention-days: 7

@@ -49,7 +49,10 @@ import {
   exportPreflightHarness,
   runDependencyFreePreflight,
 } from "./ci-preflight-dependencies.test-support.js";
-import { assertControlUiE2eOwnership } from "./ci-ui-e2e-ownership.test-support.js";
+import {
+  assertControlUiE2eOwnership,
+  frozenRealGatewayFiles,
+} from "./ci-ui-e2e-ownership.test-support.js";
 import {
   CACHE_SAVE_V5,
   CACHE_V5,
@@ -5615,9 +5618,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
             ];
         expect(args.slice(6, 6 + reporterArgs.length)).toEqual(reporterArgs);
         expect(args.slice(6 + reporterArgs.length).toSorted()).toEqual(
-          prebuilt
-            ? ["--exclude", desktop]
-            : uiE2eRealGatewayTestFiles.filter((file) => file !== desktop).toSorted(),
+          prebuilt ? ["--exclude", desktop] : frozenRealGatewayFiles.toSorted(),
         );
         const selectedConfig = createPrebuiltUiE2eVitestConfig(
           { OPENCLAW_VITEST_INCLUDE_FILE: readFileSync(includePath, "utf8") },
@@ -5635,7 +5636,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       }
       expect(new Set(selectedFiles).size).toBe(selectedFiles.length);
       expect(selectedFiles.toSorted()).toEqual(
-        uiE2eRealGatewayTestFiles
+        (prebuilt ? uiE2eRealGatewayTestFiles : frozenRealGatewayFiles)
           .filter(
             (file) =>
               file !== desktop &&

@@ -7,16 +7,14 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { AgentHarness } from "../agents/harness/types.js";
+import { cleanupSessionLifecycleArtifactsCore } from "../config/sessions/session-accessor.sqlite-artifact-cleanup.js";
 import { withSqliteSessionDeletions } from "../config/sessions/session-accessor.sqlite-deletion.js";
+import { deleteSessionEntryLifecycle } from "../config/sessions/session-accessor.sqlite-lifecycle.js";
 import type { IncognitoSessionAuthority } from "../config/sessions/session-incognito-contract.js";
 import type {
   IncognitoLifecycleEntry,
   IncognitoLifecycleOperations,
 } from "../config/sessions/session-incognito-lifecycle-contract.js";
-import {
-  deleteIncognitoSessionLifecycle,
-  reclaimIncognitoSessionLifecycle,
-} from "../config/sessions/session-incognito-lifecycle-operations.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import {
@@ -39,6 +37,12 @@ import {
   runOpenClawStateWriteTransaction,
 } from "./openclaw-state-db.js";
 import { createSessionRepositoryWorkspaceStore } from "./session-repository-workspaces.js";
+
+// Two retained private actors plus shared-state cleanup need three broker slots.
+vi.mock("node:os", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:os")>()),
+  availableParallelism: () => 24,
+}));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterAll);
 const authority: IncognitoSessionAuthority = { assertCurrent() {} };
@@ -133,7 +137,8 @@ function remove(
   capture?: Parameters<IncognitoAgentDatabaseExecution["sessions"]["lifecycle"]>[3],
 ): Promise<IncognitoLifecycleOperations["session.lifecycle.delete"]["output"]> {
   if (!capture) {
-    return deleteIncognitoSessionLifecycle({
+    return deleteSessionEntryLifecycle({
+      kind: "incognito",
       actor: owner,
       authority: source,
       env,
@@ -553,7 +558,8 @@ it("rechecks reclamation snapshots and preserves sessions outside the selected l
     const fresh = await prepare();
     expect(fresh.entries.map(({ sessionKey }) => sessionKey)).toEqual([target.sessionKey]);
     expect(
-      await reclaimIncognitoSessionLifecycle({
+      await cleanupSessionLifecycleArtifactsCore({
+        kind: "incognito",
         actor,
         authority,
         env,
@@ -564,7 +570,7 @@ it("rechecks reclamation snapshots and preserves sessions outside the selected l
           nowMs: Date.now() + 86_400_000,
         },
       }),
-    ).toEqual({ archivedTranscripts: [], removedEntries: 1 });
+    ).toEqual({ archivedTranscriptArtifacts: 0, removedEntries: 1 });
     expect(mutations).toEqual([
       {
         agentId: actor.agentId,

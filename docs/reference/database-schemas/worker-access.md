@@ -332,7 +332,9 @@ remains in shared storage.
 Report selection retries only a confirmed no-write version mismatch. Outbox
 commands constrain reads, recovery, and acknowledgments to the captured session.
 Deletion and reclamation prepare through the existing lifecycle owner and settle
-host companions from the actor receipt. Repository cleanup checks committed actor
+host companions from the actor receipt. Existing host lifecycle facades accept an
+explicit actor target, leaving their ordinary deletion safeguards unchanged.
+Repository cleanup checks committed actor
 facts instead of opening the sentinel. Fork preparation retains both actors while
 awaiting the destination entry, without holding either actor's writer turn.
 

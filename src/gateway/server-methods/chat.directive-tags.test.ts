@@ -2353,7 +2353,6 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       },
       { sessionId: targetSessionId, updatedAt: Date.now() },
     );
-    mockState.sessionIdsByKey.set(targetSessionKey, targetSessionId);
     mockState.finalPayload = setReplyPayloadMetadata(
       {
         text: "bound history reply",
@@ -2372,10 +2371,28 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       expectBroadcast: false,
     });
 
-    expect(mockState.loadSessionEntryCalls).toContainEqual({
-      rawKey: targetSessionKey,
-      opts: { agentId: "main" },
-    });
+    const targetMessages = loadTranscriptEventsSync({
+      agentId: "main",
+      sessionKey: `agent:main:${targetSessionKey}`,
+      sessionId: targetSessionId,
+      storePath: mockState.storePath,
+    })
+      .map((event) => asOptionalRecord(asOptionalRecord(event)?.message))
+      .filter((message) => message?.role === "assistant");
+    expect(targetMessages).toHaveLength(1);
+    const targetMessage = expectDefined(targetMessages[0], "binding-owned assistant reply");
+    expect(targetMessage.idempotencyKey).toBe("idem-plugin-binding-history");
+    expect(extractFirstTextBlock(projectAssistantDisplayContent(targetMessage))).toBe(
+      "bound history reply",
+    );
+    expect(loadTranscriptEventsSync(transcriptScope())).not.toContainEqual(
+      expect.objectContaining({
+        message: expect.objectContaining({
+          role: "assistant",
+          idempotencyKey: "idem-plugin-binding-history",
+        }),
+      }),
+    );
     const assistantUpdate = mockState.emittedTranscriptUpdates.find(
       (update) => (update.message as { role?: unknown } | undefined)?.role === "assistant",
     );

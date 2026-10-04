@@ -369,7 +369,7 @@ describe("doctor transcript owner repair", () => {
     });
   });
 
-  it("preserves both retained owners when saved snapshots conflict", async () => {
+  it("preserves both owners and their backup when saved snapshots conflict", async () => {
     await withStateDirEnv("openclaw-doctor-retained-key-conflict-", async ({ stateDir }) => {
       const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
       const storePath = resolveSessionStorePathCore(undefined, { agentId: "main", env });
@@ -412,17 +412,25 @@ describe("doctor transcript owner repair", () => {
         .prepare("UPDATE session_nodes SET entry_valid = -1 WHERE session_key = 'history'")
         .run();
       const nodes = database.db.prepare("SELECT * FROM session_nodes ORDER BY session_key").all();
+      expect(nodes).toContainEqual(
+        expect.objectContaining({ session_key: "agent:main:history", entry_valid: 0 }),
+      );
       const windows = database.db
         .prepare("SELECT * FROM session_windows ORDER BY session_id")
         .all();
       const events = database.db
         .prepare("SELECT * FROM transcript_events ORDER BY session_id, seq")
         .all();
+      const snapshots = database.db
+        .prepare("SELECT * FROM session_entry_snapshots ORDER BY session_key, field")
+        .all();
       await expect(repairCanonicalSessionKeys({ apply: true, cfg, env })).rejects.toThrow(
         "conflicts with agent:main:history in skillsSnapshot",
       );
       expect(database.db.prepare("SELECT * FROM session_nodes ORDER BY session_key").all()).toEqual(
-        nodes,
+        nodes.map((node) =>
+          node.session_key === "agent:main:history" ? { ...node, entry_valid: 1 } : node,
+        ),
       );
       expect(
         database.db.prepare("SELECT * FROM session_windows ORDER BY session_id").all(),
@@ -430,6 +438,39 @@ describe("doctor transcript owner repair", () => {
       expect(
         database.db.prepare("SELECT * FROM transcript_events ORDER BY session_id, seq").all(),
       ).toEqual(events);
+      expect(
+        database.db
+          .prepare("SELECT * FROM session_entry_snapshots ORDER BY session_key, field")
+          .all(),
+      ).toEqual(snapshots);
+      const backups = fs
+        .readdirSync(path.dirname(database.path))
+        .filter(
+          (name) =>
+            name.startsWith(`${path.basename(database.path)}.pre-startup-migration-`) &&
+            name.endsWith(".bak"),
+        );
+      expect(backups).toHaveLength(1);
+      const backup = openNodeSqliteDatabase(
+        resolveImmutableSqliteFileUri(path.join(path.dirname(database.path), backups[0]!)),
+        { readOnly: true },
+      );
+      try {
+        expect(backup.prepare("SELECT * FROM session_nodes ORDER BY session_key").all()).toEqual(
+          nodes,
+        );
+        expect(backup.prepare("SELECT * FROM session_windows ORDER BY session_id").all()).toEqual(
+          windows,
+        );
+        expect(
+          backup.prepare("SELECT * FROM transcript_events ORDER BY session_id, seq").all(),
+        ).toEqual(events);
+        expect(
+          backup.prepare("SELECT * FROM session_entry_snapshots ORDER BY session_key, field").all(),
+        ).toEqual(snapshots);
+      } finally {
+        backup.close();
+      }
     });
   });
 

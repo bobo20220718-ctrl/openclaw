@@ -20,7 +20,6 @@ import {
   resolveSessionStorePathForAcp,
   type AcpSessionStoreEntry,
 } from "./session-meta-store.js";
-import { readIncognitoAcpSessionEntry } from "./session-meta-worker-mutation.js";
 
 export type AcpSessionEntryReadInput = AcpSessionReadContextInput & {
   sessionKey: string;
@@ -50,9 +49,8 @@ export async function readIncognitoAcpSessionStoreEntry(
     if (target.agentId !== actor.agentId) {
       throw new Error("ACP read differs from its captured incognito actor");
     }
-    const entry = await readIncognitoAcpSessionEntry({
+    const entry = await actor.acp.readEntry({
       ...captured,
-      actor,
       sessionKey: target.storeSessionKey,
       authority: {
         assertCurrent() {

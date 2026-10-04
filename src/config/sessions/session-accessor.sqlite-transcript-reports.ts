@@ -63,7 +63,10 @@ import { assertSessionEntryCurrentAdmission } from "./session-entry-current-admi
 import type { SessionEntryCurrentCheck } from "./session-entry-current.types.js";
 import type { IncognitoSessionAuthority } from "./session-incognito-contract.js";
 import type { IncognitoTranscriptOperations } from "./session-incognito-transcript-contract.js";
-import { assertSessionStoreReadCandidate } from "./session-store-read-candidates.js";
+import {
+  assertSessionStoreReadCandidate,
+  captureSessionStoreCandidateIdentities,
+} from "./session-store-read-candidates.js";
 import { captureSessionStoreReadCandidates } from "./session-store-target-inventory.js";
 import {
   reconcileSessionTranscriptIndexes,
@@ -316,14 +319,7 @@ async function withReportWorker<T>(
     fenced.storePath ??
     resolveOpenClawAgentSqlitePath(toDatabaseOptions(resolveSqliteScope(fenced)));
   const candidates = captureSessionStoreReadCandidates(storePath);
-  const identities = new Map(
-    candidates
-      .filter((candidate) => !candidate.scope)
-      .map((candidate) => {
-        const identity = readDatabasePathIdentitySync(candidate.path);
-        return [identity.canonicalPath, identity] as const;
-      }),
-  );
+  const identities = captureSessionStoreCandidateIdentities(candidates);
   const sourceIdentity = source ? readDatabasePathIdentitySync(source.path) : undefined;
   const assertSourceCurrent = () => {
     if (!source) {

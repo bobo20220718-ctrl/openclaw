@@ -21,7 +21,6 @@ import { resolveSessionStorePathForAcp } from "./session-meta-store.js";
 import {
   prepareAcpSessionMutation,
   commitAcpSessionMutation,
-  upsertIncognitoAcpSessionMeta,
 } from "./session-meta-worker-mutation.js";
 import { upsertAcpSessionMetaNative } from "./session-meta-write.native.js";
 
@@ -46,10 +45,9 @@ export async function upsertAcpSessionMeta(
       if (target.agentId !== actor.agentId) {
         throw new Error("ACP mutation differs from its captured incognito actor");
       }
-      return upsertIncognitoAcpSessionMeta({
+      return actor.acp.upsertMeta({
         ...input,
         ...captured,
-        actor,
         sessionKey: target.storeSessionKey,
         authority: {
           assertCurrent() {

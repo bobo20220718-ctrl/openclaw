@@ -3,13 +3,10 @@ import assert from "node:assert/strict";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import type { IncognitoAcpSessionAccess } from "../acp/runtime/session-meta-incognito.types.js";
 import { readIncognitoAcpSessionStoreEntry } from "../acp/runtime/session-meta-read.js";
 import { readAcpSessionMetaForEntries } from "../acp/runtime/session-meta-readonly.js";
 import * as metadataReader from "../acp/runtime/session-meta-readonly.js";
-import {
-  readIncognitoAcpSessionEntry,
-  upsertIncognitoAcpSessionMeta,
-} from "../acp/runtime/session-meta-worker-mutation.js";
 import { upsertAcpSessionMeta } from "../acp/runtime/session-meta-write.js";
 import type { IncognitoSessionAuthority } from "../config/sessions/session-incognito-contract.js";
 import type { SessionAcpMeta } from "../config/sessions/types.js";
@@ -61,19 +58,17 @@ afterAll(async () => {
 
 it("orders set, link and clear through both owners with zero caller-thread SQL", async () => {
   const readComposed = async ({
-    actor,
     authority,
     ...input
-  }: Parameters<typeof readIncognitoAcpSessionEntry>[0]) =>
+  }: Parameters<IncognitoAcpSessionAccess["readEntry"]>[0]) =>
     (await readIncognitoAcpSessionStoreEntry(input, { actor, authority }))?.entry;
   const upsertComposed = ({
-    actor,
     authority,
     ...input
-  }: Parameters<typeof upsertIncognitoAcpSessionMeta>[0]) =>
+  }: Parameters<IncognitoAcpSessionAccess["upsertMeta"]>[0]) =>
     upsertAcpSessionMeta(input, { actor, authority });
   const sessionKey = key("sequence");
-  const target = { actor, authority, cfg, env, sessionKey };
+  const target = { authority, cfg, env, sessionKey };
   await actor.sessions.create(authority, {
     sessionKey,
     entry: { ...entry("sequence"), acp: meta },
@@ -163,7 +158,7 @@ it.each(["snapshot", "policy"] as const)(
         }
       },
     };
-    const target = { actor, authority: currentAuthority, cfg, env, sessionKey };
+    const target = { authority: currentAuthority, cfg, env, sessionKey };
     await actor.sessions.create(authority, { sessionKey, entry: entry("revoked") });
     const reached = createDeferredCore();
     const release = createDeferredCore();
@@ -190,7 +185,7 @@ it.each(["snapshot", "policy"] as const)(
         ),
       );
     const mutate = vi.fn(() => meta);
-    const pending = upsertIncognitoAcpSessionMeta({ ...target, mutate });
+    const pending = actor.acp.upsertMeta({ ...target, mutate });
     const outcome = pending.then(
       () => undefined,
       (error: unknown) => error,
@@ -220,7 +215,7 @@ it.each(["snapshot", "policy"] as const)(
         change === "policy" ? "ACP policy revoked" : "snapshot changed",
       );
       expect(mutate).toHaveBeenCalledOnce();
-      expect((await readIncognitoAcpSessionEntry({ ...target, authority }))?.acp).toBeUndefined();
+      expect((await actor.acp.readEntry({ ...target, authority }))?.acp).toBeUndefined();
     } finally {
       release.resolve();
       await outcome;
@@ -232,8 +227,7 @@ it.each(["snapshot", "policy"] as const)(
 it("rechecks policy before disclosing the joined shared metadata", async () => {
   const sessionKey = key("read-policy");
   await actor.sessions.create(authority, { sessionKey, entry: entry("read-policy") });
-  await upsertIncognitoAcpSessionMeta({
-    actor,
+  await actor.acp.upsertMeta({
     authority,
     sessionKey,
     cfg,
@@ -251,8 +245,7 @@ it("rechecks policy before disclosing the joined shared metadata", async () => {
     });
   try {
     await expect(
-      readIncognitoAcpSessionEntry({
-        actor,
+      actor.acp.readEntry({
         sessionKey,
         cfg,
         env,
@@ -273,9 +266,9 @@ it("rechecks policy before disclosing the joined shared metadata", async () => {
 
 it("keeps shared ACP metadata after the volatile actor ends", async () => {
   const sessionKey = key("retention");
-  const target = { actor, authority, cfg, env, sessionKey };
+  const target = { authority, cfg, env, sessionKey };
   await actor.sessions.create(authority, { sessionKey, entry: entry("retention") });
-  const persisted = await upsertIncognitoAcpSessionMeta({ ...target, mutate: () => meta });
+  const persisted = await actor.acp.upsertMeta({ ...target, mutate: () => meta });
   assert(persisted);
   await actor.close();
   expect(
@@ -285,5 +278,5 @@ it("keeps shared ACP metadata after the volatile actor ends", async () => {
       env,
     }),
   ).toEqual([meta]);
-  expect(() => readIncognitoAcpSessionEntry(target)).toThrow(/ended/i);
+  expect(() => actor.acp.readEntry(target)).toThrow(/ended/i);
 });

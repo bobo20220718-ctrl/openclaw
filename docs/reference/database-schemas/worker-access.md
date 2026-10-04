@@ -281,6 +281,8 @@ configuration, or memory cap and retires no T1 sites.
 
 ACP entry reads and finite field changes can use the captured actor while ACP
 metadata keeps its existing shared-state owner, persistence, and retention.
+The actor borrow exposes this composition through its lazy `acp` capability;
+production callers do not acquire the actor or select this capability until P7.
 Setting metadata touches the entry before publishing the shared row. Clearing
 metadata patches the entry before clearing the shared row. Runtime uses canonical
 ACP keys; Doctor owns legacy repair. Missing-entry linking uses the same entry
@@ -809,6 +811,17 @@ revision within the writer FIFO, including after lost replies; unknown outcomes
 never replay. Database close joins accepted mutations. Workspace authoring guards
 retain their existing owner. Schemas, quotas, retention, publication security checks,
 and update behavior are unchanged.
+
+Channel pairing allowlist preparation uses the existing shared-state reader.
+The async SDK reader captures the physical store before yielding and reads current
+rows outside inherited discovery snapshots. Ingress retains its channel and
+message authority checks after preparation. The reader preserves account
+normalization and entry order, propagates admission failures, and joins accepted
+read cleanup before its transport closes. Missing state grants no permission and
+does not initialize a database; boot and Doctor retain initialization. The
+released synchronous SDK reader and pairing request/approval mutations retain
+their native paths, so their shared SQL sites remain T1. No schema, retention,
+durability, or update migration changes.
 
 ## Carry facts, publish after commit
 

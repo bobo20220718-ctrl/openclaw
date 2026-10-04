@@ -4,7 +4,6 @@ import path from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target-paths.js";
-import { createDeferredCore } from "../shared/deferred.js";
 import {
   closeOpenClawAgentDatabaseByPath,
   resolveIncognitoOpenClawAgentSqlitePath,
@@ -79,16 +78,16 @@ test("lists and previews the selected aggregate global owner over WebSocket", as
   };
   const sessionId = "aggregate-work-global";
   const workSqlitePath = resolveUnsuffixedSqliteTargetFromSessionStorePath(workStorePath).path;
-  const backfilled = createDeferredCore();
+  const backfilled = Promise.withResolvers<void>();
   const publishTranscriptFields = sessionRows.publishTranscriptFields;
   const publication = vi
     .spyOn(sessionRows, "publishTranscriptFields")
     .mockImplementation((row, ...args) => {
       const changed = publishTranscriptFields(row, ...args);
       if (
+        row.key === "global" &&
         row.agentId === "work" &&
         row.storeTarget.storePath === workSqlitePath &&
-        row.key === "global" &&
         row.entry.sessionId === sessionId &&
         row.lastMessagePreview === "Work global conversation"
       ) {
@@ -102,12 +101,11 @@ test("lists and previews the selected aggregate global owner over WebSocket", as
     storePath: workStorePath,
     entries: { global: sessionStoreEntry(sessionId, { label: "Work global conversation" }) },
   });
-  // The suite Gateway is already live; publish the append so any empty-row backfill is refreshed.
+  // The suite Gateway is already running, so publish the transcript to its projection.
   await sessionAccessor.persistSessionTranscriptTurn(
     { agentId: "work", sessionId, sessionKey: "global", storePath: workStorePath },
     {
-      cwd: "/tmp",
-      updateMode: "inline",
+      updateMode: "file-only",
       messages: [{ message: { role: "user", content: "Work global conversation" } }],
     },
   );

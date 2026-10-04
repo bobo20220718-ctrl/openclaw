@@ -102,23 +102,19 @@ describe("chat history model selection defaults", () => {
       } satisfies OpenClawConfig;
       await state.writeConfig(cfg);
       for (const sentinel of ["global", "unknown"]) {
-        for (const agentId of ["ops", "research"]) {
-          await upsertSessionEntryCore(
-            { agentId, sessionKey: sentinel },
-            { sessionId: `${sentinel}-${agentId}`, updatedAt: 1 },
-          );
-        }
-        const qualifiedKey = `agent:research:${sentinel}`;
         await upsertSessionEntryCore(
-          { agentId: "research", sessionKey: qualifiedKey },
-          { sessionId: `qualified-${sentinel}-research`, updatedAt: 1 },
+          { agentId: "ops", sessionKey: sentinel },
+          { sessionId: `${sentinel}-ops`, updatedAt: 1 },
         );
+        const qualifiedKey = `agent:research:${sentinel}`;
         for (const [sessionKey, sessionId] of [
           [sentinel, `${sentinel}-research`],
           [qualifiedKey, `qualified-${sentinel}-research`],
-        ]) {
+        ] as const) {
+          const scope = { agentId: "research", sessionKey };
+          await upsertSessionEntryCore(scope, { sessionId, updatedAt: 1 });
           await appendTranscriptMessage(
-            { agentId: "research", sessionKey, sessionId },
+            { ...scope, sessionId },
             {
               eventId: `${sessionId}-message`,
               message: { role: "user", content: `Message for ${sessionKey}`, timestamp: 1 },

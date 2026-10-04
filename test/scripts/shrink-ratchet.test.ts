@@ -58,14 +58,14 @@ describe("shrink-ratchet", () => {
   });
 
   it.each([0, 2 * 1024 * 1024])(
-    "loads worktree, index, and reference snapshots with %i comment bytes",
-    (commentBytes) => {
+    "loads worktree, index, and reference snapshots with %i bytes of padding",
+    (size) => {
       const root = tempDirs.make("openclaw-shrink-ratchet-git-");
       const baselinePath = "baseline.txt";
       const absolutePath = path.join(root, baselinePath);
       execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
-      const prefix = commentBytes ? `#${"x".repeat(commentBytes)}\n` : "";
-      fs.writeFileSync(absolutePath, `${prefix}1\n`);
+      const padding = `#${"x".repeat(size)}\n`;
+      fs.writeFileSync(absolutePath, padding + "1\n");
       execFileSync("git", ["add", baselinePath], { cwd: root, stdio: "ignore" });
       execFileSync(
         "git",
@@ -80,15 +80,16 @@ describe("shrink-ratchet", () => {
         ],
         { cwd: root, stdio: "ignore" },
       );
-      fs.writeFileSync(absolutePath, `${prefix}2\n`);
+      fs.writeFileSync(absolutePath, padding + "2\n");
       execFileSync("git", ["add", baselinePath], { cwd: root, stdio: "ignore" });
-      fs.writeFileSync(absolutePath, `${prefix}3\n`);
+      fs.writeFileSync(absolutePath, padding + "3\n");
       const parse = (source: string) => parseRatchetScalar(source, baselinePath);
 
       expect(loadRatchetSnapshot(root, baselinePath, false, parse)).toBe(3);
       expect(loadRatchetSnapshot(root, baselinePath, true, parse)).toBe(2);
       expect(loadRatchetReference(root, "HEAD", baselinePath, parse)).toBe(1);
       expect(loadRatchetReference(root, "HEAD", "missing.txt", parse)).toBeNull();
+      expect(() => loadRatchetReference(root, "missing-ref", baselinePath, parse)).toThrow();
     },
   );
 

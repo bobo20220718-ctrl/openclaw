@@ -10,7 +10,9 @@ const note = vi.hoisted(() => vi.fn());
 const repairReservedIncognitoSessionKeys = vi.hoisted(() => vi.fn());
 const repairCanonicalSessionDeliveryStates = vi.hoisted(() => vi.fn());
 const repairCanonicalSessionResolvedSkills = vi.hoisted(() => vi.fn());
-const repairCanonicalSessionKeys = vi.hoisted(() => vi.fn());
+const repairCanonicalSessionKeys = vi.hoisted(() =>
+  vi.fn<typeof import("./doctor-session-canonical-keys.js").repairCanonicalSessionKeys>(),
+);
 const repairLegacySessionWorktreeWorkspaces = vi.hoisted(() => vi.fn());
 const migrateLegacyMainSessionKeys = vi.hoisted(() => vi.fn());
 const runDoctorSessionSqlite = vi.hoisted(() => vi.fn());
@@ -263,7 +265,13 @@ describe("doctor session transcript repair", () => {
     const cfg = { agents: { entries: { ops: {} } } };
     const env = { ...process.env, OPENCLAW_STATE_DIR: root };
     await noteSessionTranscriptHealth({ cfg, env, shouldRepair: true });
-    expect(repairCanonicalSessionKeys).toHaveBeenCalledWith({ apply: true, cfg, env });
+    expect(repairCanonicalSessionKeys).toHaveBeenCalledWith({
+      apply: true,
+      authority: maintenanceAuthority,
+      cfg,
+      env,
+    });
+    expect(repairCanonicalSessionKeys.mock.calls[0]?.[0].authority).toBe(maintenanceAuthority);
     expect(repairLegacySessionWorktreeWorkspaces).toHaveBeenCalledWith({
       apply: false,
       cfg,

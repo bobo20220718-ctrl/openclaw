@@ -548,7 +548,7 @@ describe("retained exact row publications", () => {
         );
         const unrelatedDatabase = openOpenClawAgentDatabase({ agentId: "research" });
         const selected = await withGatewaySessionStoreTarget(
-          { cfg, key: "main" },
+          { cfg, key: "main", agentId: "main" },
           (target) => target,
         );
         const scope = { agentId: "main", sessionKey: key, storePath: selected.storePath };
@@ -556,7 +556,7 @@ describe("retained exact row publications", () => {
         const read = (consume: (assertCurrent: () => void) => void) =>
           mode === "lookup"
             ? withGatewaySessionStoreTarget(
-                { cfg, key: "main", includeMembership: true },
+                { cfg, key: "main", agentId: "main", includeMembership: true },
                 (_target, _members, assert) => consume(assert),
               )
             : withQualifiedGatewaySessionStoreTarget({

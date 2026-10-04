@@ -1,5 +1,8 @@
 import { randomUUID, X509Certificate } from "node:crypto";
+import fs from "node:fs/promises";
 import { createServer } from "node:http";
+import { expectDefined } from "@openclaw/normalization-core";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import type { UsersSelfResult } from "../../packages/gateway-protocol/src/schema/users.js";
 import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
@@ -9,6 +12,8 @@ import { addSessionMember, removeSessionMember } from "../config/sessions/sessio
 import { historyLane } from "../config/sessions/session-transcript-worker-resources.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
+import { readPersistedMediaFacts } from "../media/media-facts.js";
+import { resolveInboundMediaReference } from "../media/media-reference.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
@@ -340,6 +345,7 @@ it(
             work: `GLOBAL_WORK_${randomUUID()}`,
           };
           const sessionIds = new Map<string, string>();
+          const attachmentRefs = new Map<string, string>();
           for (const method of ["chat.send", "agent"] as const) {
             for (const agentId of [first, second]) {
               const otherAgentId = agentId === "main" ? "work" : "main";
@@ -379,9 +385,6 @@ it(
               const providerInput = requests.slice(requestOffset).join("\n");
               expect(providerInput).toContain(message);
               expect(providerInput).not.toContain(markers[otherAgentId]);
-              if (attachments) {
-                expect(providerInput).toContain(attachmentText);
-              }
               const history = await gateway.client.request<{
                 sessionKey: string;
                 sessionId: string;
@@ -395,6 +398,35 @@ it(
               }
               sessionIds.set(agentId, history.sessionId);
               expect(new Set(sessionIds.values()).size).toBe(sessionIds.size);
+              if (attachments) {
+                const uploaded = history.messages
+                  .flatMap((message) => {
+                    const record = asOptionalRecord(message);
+                    return record ? (readPersistedMediaFacts(record) ?? []) : [];
+                  })
+                  .filter((fact) => fact.fileName === `${agentId}-notes.txt`);
+                expect(uploaded).toMatchObject([
+                  { contentType: "text/plain", sizeBytes: Buffer.byteLength(attachmentText) },
+                ]);
+                const mediaRef = expectDefined(uploaded[0]?.url, "uploaded media reference");
+                expect(mediaRef).toMatch(/^media:\/\/inbound\//);
+                const resolved = expectDefined(
+                  await resolveInboundMediaReference(mediaRef),
+                  "managed inbound attachment",
+                );
+                await expect(fs.readFile(resolved.physicalPath, "utf8")).resolves.toBe(
+                  attachmentText,
+                );
+                attachmentRefs.set(agentId, mediaRef);
+              }
+              const attachmentRef = attachmentRefs.get(agentId);
+              const otherAttachmentRef = attachmentRefs.get(otherAgentId);
+              if (attachmentRef) {
+                expect(providerInput).toContain(attachmentRef);
+              }
+              if (otherAttachmentRef) {
+                expect(providerInput).not.toContain(otherAttachmentRef);
+              }
               const transcript = await loadTranscriptEvents({
                 agentId,
                 sessionKey: "global",
@@ -405,12 +437,21 @@ it(
                 expect(text).toContain(message);
                 expect(text).toContain(providerReply);
                 expect(text).not.toContain(markers[otherAgentId]);
+                if (attachmentRef) {
+                  expect(text).toContain(attachmentRef);
+                }
+                if (otherAttachmentRef) {
+                  expect(text).not.toContain(otherAttachmentRef);
+                }
               }
               const otherHistory = await gateway.client.request<{ messages: unknown[] }>(
                 "chat.history",
                 { sessionKey: "global", agentId: otherAgentId, limit: 20 },
               );
               expect(JSON.stringify(otherHistory.messages)).not.toContain(markers[agentId]);
+              if (attachmentRef) {
+                expect(JSON.stringify(otherHistory.messages)).not.toContain(attachmentRef);
+              }
               expect(providerErrors).toEqual([]);
             }
           }

@@ -1,0 +1,327 @@
+# Task-only bounded comparison. The prior candidate is not main or inherited proof.
+name: PR 156941 product candidate comparison
+run-name: PR 156941 product candidate comparison
+
+on:
+  push:
+    branches: [test/pr-156941-product-comparison]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-156941-product-comparison
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  ORIGINAL_FIXTURE_BLOB: d7f6d610a68ba7e3617ad602178636c4736da0f8
+  OVERLAY_SHA256: 1dbe2d3d9d90aa45de18db97523e26a2c56c865d1919ea74db3cf32847f28aa9
+  NODE_VERSION: "24.21.0"
+
+jobs:
+  comparison:
+    name: ${{ matrix.lane }}
+    if: github.ref == 'refs/heads/test/pr-156941-product-comparison'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CANDIDATE_SHA: ${{ matrix.candidate }}
+      PROOF_LANE: ${{ matrix.lane }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - lane: current-candidate
+            candidate: 850cfd2b1dfb3fe9be0bd5d261761772ba3857c6
+          - lane: prior-qualified-candidate
+            candidate: 58c25f9b877b2f209dd7e731517892d204999624
+    steps:
+      - name: Validate immutable proof inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ORIGINAL_FIXTURE_BLOB" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$OVERLAY_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]
+          PROOF_DIR="$RUNNER_TEMP/pr-156941-product-comparison"
+          printf 'PROOF_DIR=%s\n' "$PROOF_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$PROOF_DIR"
+
+
+      - name: Checkout exact candidate without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+
+
+      - name: Verify secretless candidate and public comparison sources
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert actual == os.environ['CANDIDATE_SHA'], 'Candidate identity changed'
+          secret_names = (
+              'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY',
+              'GH_TOKEN', 'GITHUB_TOKEN', 'NPM_TOKEN', 'NODE_AUTH_TOKEN',
+              'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+              'GOOGLE_APPLICATION_CREDENTIALS', 'SSH_AUTH_SOCK',
+          )
+          assert not any(os.environ.get(name) for name in secret_names), 'Unexpected task credential in proof environment'
+          credential_config = subprocess.run(
+              ['git', 'config', '--get-regexp', r'http\..*extraheader'],
+              text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+          )
+          assert credential_config.returncode == 1, 'Git authentication remained after checkout'
+          subprocess.run(['git', 'diff', '--exit-code'], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--exit-code'], check=True)
+          evidence = {
+              'candidate': actual,
+              'workflowHead': os.environ['GITHUB_SHA'],
+              'originalFixtureBlob': os.environ['ORIGINAL_FIXTURE_BLOB'],
+              'overlaySha256': os.environ['OVERLAY_SHA256'],
+              'runner': os.environ['RUNNER_ENVIRONMENT'],
+              'lane': os.environ['PROOF_LANE'],
+              'requestedNodeVersion': os.environ['NODE_VERSION'],
+              'secretPreflight': 'passed',
+              'comparisonKind': 'current versus prior-qualified-candidate; not main or inherited proof',
+          }
+          pathlib.Path(os.environ['PROOF_DIR'], 'identity.json').write_text(json.dumps(evidence, indent=2) + '\n')
+          PY
+          git -c core.hooksPath=/dev/null fetch --no-tags --depth=1 \
+            https://github.com/openclaw/openclaw.git "$GITHUB_SHA"
+
+
+      - name: Setup maintained Node and pnpm toolchain
+        id: toolchain
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.21.0"
+          install-bun: "false"
+          cache-mode: "off"
+          semantic-checks: "true"
+
+
+      - name: Verify the effective Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version | tee "$PROOF_DIR/node-version.txt"
+          test "$(cat "$PROOF_DIR/node-version.txt")" = "v$NODE_VERSION"
+
+
+      - name: Apply and verify the diagnostic-only overlay
+        id: overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          output = pathlib.Path(os.environ['PROOF_DIR'])
+          fixture = 'src/gateway/server.chat-membership-authority.product.test.ts'
+          overlay_path = '.diagnostics/server.chat-membership-authority.product.test.ts'
+          subprocess.run(['git', 'diff', '--exit-code'], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--exit-code'], check=True)
+          original = subprocess.check_output(['git', 'show', os.environ['CANDIDATE_SHA'] + ':' + fixture])
+          original_blob = subprocess.check_output(['git', 'hash-object', '--stdin'], input=original).decode().strip()
+          assert original_blob == os.environ['ORIGINAL_FIXTURE_BLOB'], 'Original fixture drifted'
+          assert pathlib.Path(fixture).read_bytes() == original, 'Fixture changed before overlay'
+          overlay = subprocess.check_output(['git', 'show', os.environ['GITHUB_SHA'] + ':' + overlay_path])
+          assert hashlib.sha256(overlay).hexdigest() == os.environ['OVERLAY_SHA256'], 'Overlay hash mismatch'
+          pattern = rb'(?m)^[ \t]*// BEGIN PR156941 DIAGNOSTIC\n[\s\S]*?^[ \t]*// END PR156941 DIAGNOSTIC\n'
+          assert len(re.findall(pattern, overlay)) == 57, 'Diagnostic block inventory drifted'
+          assert re.sub(pattern, b'', overlay) == original, 'Overlay changed original test bytes'
+          # Exact byte recovery preserves every assertion, RPC, ordering edge and 90s budget.
+          (output / 'fixture-original.ts').write_bytes(original)
+          (output / 'fixture-overlay.ts').write_bytes(overlay)
+          pathlib.Path(fixture).write_bytes(overlay)
+          patch = subprocess.check_output(['git', 'diff', '--no-ext-diff', '--', fixture])
+          assert subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines() == [fixture]
+          (output / 'overlay.patch').write_bytes(patch)
+          (output / 'overlay-preservation.json').write_text(json.dumps({
+              'originalFixtureBlob': original_blob,
+              'overlaySha256': hashlib.sha256(overlay).hexdigest(),
+              'originalBytesRecoveredExactly': True,
+              'diagnosticBlocks': 57,
+              'maxRegularDiagnosticRecords': 160,
+              'failureDiagnosticFields': ['event', 'phase', 'elapsedMs', 'providerRequests', 'providerHolds', 'providerResumes', 'records'],
+          }, indent=2) + '\n')
+          PY
+
+
+      - name: Collect five serial whole-file observations without retrying failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import hashlib, json, os, pathlib, re, subprocess, sys, time
+          import xml.etree.ElementTree as ET
+
+          output = pathlib.Path(os.environ['PROOF_DIR'])
+          fixture = 'src/gateway/server.chat-membership-authority.product.test.ts'
+          expected_name = 'carries current caller, membership and global ownership through transcript persistence and agent dispatch'
+          expected_fields = {'event', 'phase', 'elapsedMs', 'providerRequests', 'providerHolds', 'providerResumes', 'records'}
+          allowed_events = {'checkpoint', 'provider-request', 'provider-hold', 'provider-resumed', 'failure'}
+          source_patch = (output / 'overlay.patch').read_bytes()
+          records = []
+          stop_reason = None
+
+          def verify_source():
+              assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == os.environ['CANDIDATE_SHA']
+              subprocess.run(['git', 'diff', '--cached', '--exit-code'], check=True)
+              assert subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines() == [fixture]
+              assert hashlib.sha256(pathlib.Path(fixture).read_bytes()).hexdigest() == os.environ['OVERLAY_SHA256']
+              assert subprocess.check_output(['git', 'diff', '--no-ext-diff', '--', fixture]) == source_patch
+
+          def save_results():
+              evidence = {
+                  'candidate': os.environ['CANDIDATE_SHA'],
+                  'lane': os.environ['PROOF_LANE'],
+                  'comparisonKind': 'current versus prior-qualified-candidate; not main or inherited proof',
+                  'plannedRuns': 5,
+                  'collectedRuns': sum(record.get('collected', False) for record in records),
+                  'passedRuns': sum(record.get('passed', False) for record in records),
+                  'stopReason': stop_reason,
+                  'observations': records,
+              }
+              (output / 'comparison-results.json').write_text(json.dumps(evidence, indent=2) + '\n')
+
+          try:
+              for iteration in range(1, 6):
+                  # Every observation is a new whole-file process with its unchanged 90s test budget.
+                  # A collected failure remains an observation, never an invitation to retry it.
+                  verify_source()
+                  report = output / f'product-{iteration}.xml'
+                  log_path = output / f'product-{iteration}.log'
+                  record = {'iteration': iteration, 'collected': False, 'passed': False}
+                  records.append(record)
+                  save_results()
+                  started = time.monotonic()
+                  with log_path.open('w') as log:
+                      process = subprocess.run([
+                          'node', 'scripts/run-vitest.mjs', fixture,
+                          '--maxWorkers=1', '--reporter=default', '--reporter=junit',
+                          f'--outputFile={report}',
+                      ], stdout=log, stderr=subprocess.STDOUT)
+                  record['processExitCode'] = process.returncode
+                  record['wallSeconds'] = round(time.monotonic() - started, 3)
+                  text = re.sub(r'\x1b\[[0-9;]*m', '', log_path.read_text())
+                  clean_errors = re.findall(
+                      r'error during close|close timed out after|Unhandled (?:Error|Rejection|Exception)', text,
+                  )
+                  record['teardownOrUnhandledLogIndicators'] = clean_errors
+                  phases = []
+                  phase_errors = 0
+                  for match in re.finditer(r'\[chat-membership-diagnostic\]\s+(\{[^\r\n]*\})', text):
+                      try:
+                          phase = json.loads(match.group(1))
+                          assert set(phase) == expected_fields
+                          assert phase['event'] in allowed_events
+                          assert isinstance(phase['phase'], str) and len(phase['phase']) <= 160
+                          assert all(isinstance(phase[key], int) and phase[key] >= 0 for key in expected_fields - {'event', 'phase'})
+                          phases.append(phase)
+                      except (ValueError, TypeError, AssertionError):
+                          phase_errors += 1
+                  record['phaseRecords'] = len(phases)
+                  record['phaseParseErrors'] = phase_errors
+                  record['lastPhase'] = phases[-1] if phases else None
+                  record['providerRequests'] = max((phase['providerRequests'] for phase in phases), default=0)
+                  record['scenarioComplete'] = next((phase for phase in phases if phase['phase'] == 'scenario.complete'), None)
+                  record['cleanupComplete'] = next((phase for phase in phases if phase['phase'] == 'cleanup.complete'), None)
+                  (output / f'product-{iteration}-phases.json').write_text(json.dumps(phases, indent=2) + '\n')
+                  try:
+                      data = ET.parse(report).getroot()
+                      cases = list(data.iter('testcase'))
+                      assert data.tag == 'testsuites'
+                      assert int(data.attrib['tests']) == 1 and len(cases) == 1
+                      assert cases[0].attrib['name'] == expected_name
+                      assert cases[0].find('skipped') is None
+                      record['collected'] = True
+                      record['testSeconds'] = float(cases[0].attrib['time'])
+                      record['junitFailures'] = int(data.attrib['failures'])
+                      record['junitErrors'] = int(data.attrib['errors'])
+                      record['failureTypes'] = [failure.attrib.get('type') for failure in data.findall('.//failure')]
+                      record['errorElements'] = len(data.findall('.//error'))
+                      record['suiteErrors'] = sum(int(suite.attrib['errors']) for suite in data.findall('testsuite'))
+                      record['passed'] = (
+                          process.returncode == 0
+                          and record['junitFailures'] == 0
+                          and record['junitErrors'] == 0
+                          and record['errorElements'] == 0
+                          and record['suiteErrors'] == 0
+                          and not clean_errors
+                          and bool(phases)
+                          and phase_errors == 0
+                      )
+                  except (OSError, ET.ParseError, ValueError, KeyError, AssertionError):
+                      stop_reason = 'uncollected-or-invalid-product-report'
+                  try:
+                      verify_source()
+                      record['sourceOverlayUnchanged'] = True
+                  except (AssertionError, subprocess.CalledProcessError):
+                      record['sourceOverlayUnchanged'] = False
+                      record['passed'] = False
+                      stop_reason = 'source-integrity-setup-failure'
+                  (output / f'product-{iteration}-summary.json').write_text(json.dumps(record, indent=2) + '\n')
+                  save_results()
+                  print(json.dumps({
+                      'lane': os.environ['PROOF_LANE'], 'iteration': iteration,
+                      'collected': record['collected'], 'passed': record['passed'],
+                      'wallSeconds': record['wallSeconds'], 'testSeconds': record.get('testSeconds'),
+                      'providerRequests': record['providerRequests'], 'lastPhase': record['lastPhase'],
+                      'stopReason': stop_reason,
+                  }), flush=True)
+                  if stop_reason:
+                      break
+          finally:
+              save_results()
+
+          sys.exit(0 if len(records) == 5 and all(record.get('passed') for record in records) and not stop_reason else 1)
+          PYCODE
+
+      - name: Verify the overlay was the only mutation and restore exact candidate
+        if: ${{ always() && steps.overlay.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          output = pathlib.Path(os.environ['PROOF_DIR'])
+          fixture = 'src/gateway/server.chat-membership-authority.product.test.ts'
+          target = pathlib.Path(fixture)
+          original = subprocess.check_output(['git', 'show', os.environ['CANDIDATE_SHA'] + ':' + fixture])
+          try:
+              assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == os.environ['CANDIDATE_SHA']
+              subprocess.run(['git', 'diff', '--cached', '--exit-code'], check=True)
+              assert subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines() == [fixture]
+              assert hashlib.sha256(target.read_bytes()).hexdigest() == os.environ['OVERLAY_SHA256']
+              assert subprocess.check_output(['git', 'diff', '--no-ext-diff', '--', fixture]) == (output / 'overlay.patch').read_bytes()
+          finally:
+              target.write_bytes(original)
+          subprocess.run(['git', 'diff', '--exit-code'], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--exit-code'], check=True)
+          (output / 'source-restoration.json').write_text(json.dumps({
+              'candidate': os.environ['CANDIDATE_SHA'],
+              'onlyHashBoundOverlayChanged': True,
+              'trackedSourceRestored': True,
+          }, indent=2) + '\n')
+          PY
+
+
+      - name: Upload every observation and restoration evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr-156941-product-comparison-${{ matrix.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr-156941-product-comparison/
+          if-no-files-found: error
+          retention-days: 7

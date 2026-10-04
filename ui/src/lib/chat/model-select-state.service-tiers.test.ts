@@ -215,3 +215,36 @@ it.each([{ tiers: ["default"] }, { tiers: [] }])(
     });
   },
 );
+
+it.each([{ tiers: ["priority"] }, { tiers: ["default"] }, { tiers: [] }])(
+  "does not invent tier recovery for a different harness with $tiers",
+  ({ tiers }) => {
+    const state = resolveFastModeSelection({
+      sessionsResult: null,
+      currentModelOverride: "openai/other-harness",
+      fastModeTarget: {
+        model: "other-harness",
+        modelProvider: "openai",
+        fastMode: "ultrafast",
+        agentRuntime: { id: "codex", source: "session" },
+      },
+      catalog: [
+        {
+          id: "other-harness",
+          name: "Other harness",
+          provider: "openai",
+          available: true,
+          supportsFastMode: true,
+          serviceTiers: tiers,
+          agentRuntime: { id: "codex", source: "model" },
+        },
+      ],
+    });
+    expect(state).toMatchObject({
+      active: true,
+      currentOverride: "ultrafast",
+      label: "Ultrafast",
+      ultrafastSupported: false,
+    });
+  },
+);

@@ -369,11 +369,16 @@ function resolveFastModeProvider(
 }
 
 function isChatStandardOnlySpeed(
-  entry: Pick<ModelRuntimeEntry, "serviceTiers"> | undefined,
+  entry: Pick<ModelRuntimeEntry, "supportsFastMode" | "serviceTiers"> | undefined,
+  canRecoverRejectedTier: boolean,
 ): boolean {
   return (
     entry?.serviceTiers !== undefined &&
-    !entry.serviceTiers.some((tier) => tier === "priority" || tier === "ultrafast")
+    !entry.serviceTiers.some((tier) => tier === "priority" || tier === "ultrafast") &&
+    (canRecoverRejectedTier ||
+      (entry.supportsFastMode === false &&
+        entry.serviceTiers.length === 1 &&
+        entry.serviceTiers[0] === "default"))
   );
 }
 
@@ -427,9 +432,18 @@ export function resolveChatFastModeSelectState(
     selectedEntries.every(
       ({ runtime }) => runtime?.available === true && runtime.serviceTiers?.includes("ultrafast"),
     );
+  // Only native API requests recover rejected account tiers; other harnesses keep their wire preference.
+  const canRecoverRejectedTier =
+    isOpenAI &&
+    selectedEntries.every(
+      ({ runtime }) =>
+        (runtime?.agentRuntime?.id ?? activeRow?.agentRuntime?.id ?? "openclaw") === "openclaw",
+    );
   const standardOnly =
     selectedEntries.length > 0 &&
-    selectedEntries.every(({ runtime }) => isChatStandardOnlySpeed(runtime));
+    selectedEntries.every(({ runtime }) =>
+      isChatStandardOnlySpeed(runtime, canRecoverRejectedTier),
+    );
   const ultrafastUnavailable =
     selectedEntries.length > 0 &&
     selectedEntries.every(
@@ -438,7 +452,10 @@ export function resolveChatFastModeSelectState(
     );
   const effectiveMode = standardOnly
     ? false
-    : savedMode === "ultrafast" && ultrafastUnavailable && requestSupported
+    : savedMode === "ultrafast" &&
+        canRecoverRejectedTier &&
+        ultrafastUnavailable &&
+        requestSupported
       ? true
       : savedMode;
   // Capability changes the effective choice without rewriting the saved session preference.

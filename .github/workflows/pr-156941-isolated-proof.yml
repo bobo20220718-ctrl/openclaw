@@ -16,8 +16,8 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CANDIDATE_SHA: a80c18ab9df88b7c20721e06cd0d61e9044f5848
-  BASE_SHA: 40a6c07e39d04bc10bf64362ba5324bbf40175a7
+  CANDIDATE_SHA: 58c25f9b877b2f209dd7e731517892d204999624
+  BASE_SHA: 9c66d4c9a39b16d70e7c55186fe7e8550468a663
   CONTRIBUTOR_SHA: 17487454baa68c8901b1c9c84393135e93748a55
   BEFORE_FIX_SHA: e9dd74b55fd92227b4da8d5ea8a248d0e7dca304
   NODE_VERSION: "24.21.0"
@@ -26,7 +26,7 @@ jobs:
   proof:
     if: github.ref == 'refs/heads/test/pr-156941-isolated-proof'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Validate immutable proof inputs
         shell: bash
@@ -272,6 +272,7 @@ jobs:
             src/gateway/gateway-allowlist-store-read-failure.e2e.test.ts \
             src/gateway/server.chat.gateway-server-chat-b.test.ts \
             src/gateway/operator-role-policy.test.ts \
+            src/gateway/operator-run-authority.worker.test.ts \
             src/gateway/session-access-authority.test.ts \
             src/gateway/session-row-projection.worker-read.test.ts \
             src/gateway/server-methods/mcp-app-onboarding.test.ts \
@@ -430,7 +431,7 @@ jobs:
               ('post-claim-sync-authority', pre_file, pre_old, pre_new, sql_file, sql_title, sql_assertion, 2),
               ('unjoined-callback', join_source, join_old, join_new, join_file, join_title, 'expect(released).toBeDefined();', 1),
               ('uncleared-reservation', join_source, reservation_old, reservation_new, join_file, reservation_title, 'expect(fixture.context.dedupe.has(pendingKey)).toBe(false);', 1),
-              ('lost-receipt-guard', receipt_file, receipt_old, receipt_new, 'src/gateway/session-access-authority.test.ts', 'fences receipt expiry without attaching it to retained actor or session lifetime', 'expect(invoke).toThrow("receipt expired");', 1),
+              ('lost-receipt-guard', receipt_file, receipt_old, receipt_new, 'src/gateway/session-access-authority.test.ts', 'fences receipt expiry without attaching it to retained actor or session lifetime', 'expect(loadSessionEntryReadOnly(scope)).toEqual(committed);', 1),
               ('unprepared-profile-policy', profile_file, profile_old, profile_new, 'src/gateway/session-sharing.worker.test.ts', 'rechecks prepared unprepared-role policy at the next worker admission', 'expect(result.error, "prepared role authorization").toBeNull();', 1),
               ('cross-store-invalidation', row_file, row_old, row_new, 'src/gateway/session-utils-store-lookup.test.ts', 'rows through non-row events but fences members, aliases and topology', 'expect(assertCurrent, "unrelated physical store publication").not.toThrow();', 2),
           ]

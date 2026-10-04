@@ -1,13 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { MessagePort } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import type { IncognitoSessionAuthority } from "../../config/sessions/session-incognito-contract.js";
 import {
   mergeSessionEntry,
   type SessionAcpMeta,
   type SessionEntry,
 } from "../../config/sessions/types.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   createSqliteWorkerOperationAdmission,
   type SqliteWorkerOperationAdmission,
@@ -21,9 +19,12 @@ import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-wo
 import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
 import { captureAcpSessionEntryBinding } from "./session-meta-entry.kernel.js";
 import type { AcpSessionEntryMutation } from "./session-meta-entry.types.js";
+import type {
+  IncognitoAcpSessionMutation,
+  IncognitoAcpSessionParams,
+} from "./session-meta-incognito.types.js";
 import { buildAcpDatabaseSessionKey } from "./session-meta-keys.js";
 import { readAcpSessionMetaForEntries } from "./session-meta-readonly.js";
-import type { upsertAcpSessionMetaNative } from "./session-meta-write.native.js";
 import type {
   AcpSessionMutationCommit,
   AcpSessionMutationDecision,
@@ -180,16 +181,11 @@ export async function commitAcpSessionMutation(
   }
 }
 
-type Target = {
+type Target = IncognitoAcpSessionParams & {
   actor: Pick<
     IncognitoAgentDatabaseExecution,
     "agentId" | "path" | "identity" | "sessions" | "assertCurrent"
   >;
-  authority: IncognitoSessionAuthority;
-  sessionKey: string;
-  cfg: OpenClawConfig;
-  env: NodeJS.ProcessEnv;
-  databasePath?: string;
 };
 
 function captureTarget(params: Target) {
@@ -237,11 +233,7 @@ export function readIncognitoAcpSessionEntry(params: Target): Promise<SessionEnt
 
 /** Preserve entry → shared metadata ordering without holding an actor grant across a second owner. */
 export function upsertIncognitoAcpSessionMeta(
-  params: Target &
-    Pick<
-      Parameters<typeof upsertAcpSessionMetaNative>[0],
-      "mutate" | "now" | "expectedControlBinding"
-    >,
+  params: Target & IncognitoAcpSessionMutation,
 ): Promise<SessionEntry | null> {
   const { actor, authority, sessionKey, context, assertCurrent } = captureTarget(params);
   const expectedControlBinding =

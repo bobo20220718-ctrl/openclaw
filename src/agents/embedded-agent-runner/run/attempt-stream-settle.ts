@@ -653,14 +653,22 @@ export async function prepareEmbeddedAttemptTransport(input: {
     const record = runtime.accountCatalog.prepareServiceTierObserver({ profileId, credential });
     session.agent.streamFn = createOpenAIServiceTierObservationWrapper(
       session.agent.streamFn,
-      (model) =>
+      (model, serviceTiers) =>
         !input.abortSignal.aborted &&
         record({
           modelId: model.id,
           runtimeId: "openclaw",
           api: model.api,
           baseUrl: model.baseUrl,
-          serviceTiers: ["priority"],
+          serviceTiers,
+        }),
+      (model) =>
+        runtime.accountCatalog?.readServiceTiers({
+          profileId,
+          modelId: model.id,
+          runtimeId: "openclaw",
+          api: model.api,
+          baseUrl: model.baseUrl,
         }),
     );
   }

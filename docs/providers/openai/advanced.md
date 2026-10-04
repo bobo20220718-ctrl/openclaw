@@ -153,13 +153,22 @@ fallback even with explicit `agentRuntime.id: "codex"`; see
     calls without fast mode. The cutoff defaults to 60 seconds; set
     `params.fastAutoOnSeconds` on the active model to change it.
 
-    For the embedded OpenClaw runtime, available API-key OpenAI Responses
-    routes that support Fast mode offer Standard, Fast, and Ultrafast in the
-    Control UI without requiring a catalog to advertise the tier. If a response
+    For the embedded OpenClaw runtime, the Control UI combines provider route
+    limits with account observations when offering Standard, Fast, and Ultrafast.
+    Daybreak models on the OpenAI Platform route do not offer Ultrafast.
+    Custom endpoints and ChatGPT account catalogs retain their own tier policy. If a response
     to an Ultrafast request echoes a different `service_tier`, OpenClaw records
     the downgrade for that profile and model and removes Ultrafast from later
     model-list results until account discovery refreshes, credentials change, or
-    the prepared runtime retires. ChatGPT-account
+    the prepared runtime retires.
+
+    If the native OpenAI API explicitly rejects `service_tier` before any output
+    or tool activity, OpenClaw automatically retries the same request at a slower
+    tier: Ultrafast → Fast → Standard. It does not retry tier errors after output,
+    cancellation, or an ambiguous connection failure. Profile-backed requests
+    remember rejected tiers for that account/model/route and avoid them on later
+    calls without changing the saved speed preference. These observations are
+    cleared by the same catalog/credential lifecycle, not persisted across restarts. ChatGPT-account
     availability remains based on authenticated account catalog discovery.
 
     ```json5

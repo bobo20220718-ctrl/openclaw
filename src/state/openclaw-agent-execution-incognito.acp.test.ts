@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { readAcpSessionMetaForEntries } from "../acp/runtime/session-meta-readonly.js";
+import * as metadataReader from "../acp/runtime/session-meta-readonly.js";
 import {
   readIncognitoAcpSessionEntry,
   upsertIncognitoAcpSessionMeta,
-} from "../acp/runtime/session-meta-incognito.js";
-import { readAcpSessionMetaForEntries } from "../acp/runtime/session-meta-readonly.js";
-import * as metadataReader from "../acp/runtime/session-meta-readonly.js";
+} from "../acp/runtime/session-meta-worker-mutation.js";
 import type { IncognitoSessionAuthority } from "../config/sessions/session-incognito-contract.js";
 import type { SessionAcpMeta } from "../config/sessions/types.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -105,7 +105,7 @@ it("orders set, link and clear through both owners with zero caller-thread SQL",
     });
     expect(set).toMatchObject({ sessionId: "sequence", acp: meta });
     expect(set?.updatedAt).toBeGreaterThan(100);
-    expect(sequence).toEqual(["entry", "entry", "metadata"]);
+    expect(sequence).toEqual(["entry", "metadata"]);
     const stored = (await actor.sessions.read(authority, { sessionKey })).entry;
     expect(stored?.acp).toBeUndefined();
     const joined = await readIncognitoAcpSessionEntry(target);
@@ -119,7 +119,7 @@ it("orders set, link and clear through both owners with zero caller-thread SQL",
     expect(await upsertIncognitoAcpSessionMeta({ ...target, mutate: () => null })).toMatchObject({
       sessionId: "sequence",
     });
-    expect(sequence).toEqual(["entry", "metadata", "entry"]);
+    expect(sequence).toEqual(["entry", "metadata"]);
     expect((await readIncognitoAcpSessionEntry(target))?.acp).toBeUndefined();
     const linked = await upsertIncognitoAcpSessionMeta({
       ...target,

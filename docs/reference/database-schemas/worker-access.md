@@ -281,9 +281,9 @@ configuration, or memory cap and retires no T1 sites.
 
 ACP entry reads and finite field changes can use the captured actor while ACP
 metadata keeps its existing shared-state owner, persistence, and retention.
-Setting metadata touches the entry and clears embedded legacy metadata before
-publishing the shared row. Clearing metadata patches the entry, clears the shared
-row, then finishes legacy cleanup. Missing-entry linking uses the same entry
+Setting metadata touches the entry before publishing the shared row. Clearing
+metadata patches the entry before clearing the shared row. Runtime uses canonical
+ACP keys; Doctor owns legacy repair. Missing-entry linking uses the same entry
 kernel. No operation holds an actor FIFO turn while awaiting shared-state work.
 The actor lifetime joins the complete composition; each SQL transaction remains
 synchronous in its original worker. Shared publication revalidates the captured
@@ -1861,3 +1861,15 @@ Discord SDK's synchronous list, touch, lifecycle setter, and unbind compatibilit
 paths remain under the same owner, deprecated for removal at the next Plugin SDK
 major. Bundled callers use the awaited variants. ACP startup session reads are a
 separate worker migration.
+
+Shared and per-agent auth-profile success and failure bookkeeping use the existing
+auth-profile shared-state domain and canonical agent executor. The caller captures
+the physical stores and execution authority before preparing inherited ownership
+and provider observations. Workers reread the current rows and apply the same health
+reducers used for personal model accounts; inherited success clears health without
+changing the shared owner's last-good selection or rotation time. Committed facts
+update the existing runtime snapshot owner. Gateway close refuses new bookkeeping
+and joins accepted operations before closing worker transports. Uncertain outcomes
+are never replayed. Schemas, stored bytes, retention, and update behavior are
+unchanged. The released synchronous auth-store save SDK remains available; quota
+reprobe and explicit block mutations retain their existing owners.

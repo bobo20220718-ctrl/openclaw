@@ -1,4 +1,5 @@
-// Vitest shared config wires the shared test shard.
+// Threads inherit admission; forks also run this bootstrap in their own process.
+import "./vitest.sqlite-preload.mts";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,13 +28,6 @@ import { createRedactingReporterPlugin } from "./vitest.reporters.ts";
 import { shouldPrintVitestThrottle } from "./vitest.system-load.ts";
 import { DEFAULT_VITEST_TEST_TIMEOUT_MS } from "./vitest.timeouts.ts";
 import { compiledSubprocessesPlugin } from "./vitest.worker-artifacts.ts";
-
-if (process.versions.bun) {
-  // Threads capture this decision when created; late admission leaves their SQLite pools conservative.
-  const { initializeSqliteRuntimeCapabilities } =
-    await import("../../src/infra/bun-sqlite-library.ts");
-  await initializeSqliteRuntimeCapabilities();
-}
 
 export type { LocalVitestScheduling };
 

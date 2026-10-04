@@ -8,6 +8,7 @@ import {
   readAgentRuntimeRestrictionErrorDetails,
   type ErrorShape,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { readAcpSessionMetaForEntries } from "../../acp/runtime/session-meta-readonly.js";
 import { resolveAgentEntry } from "../../agents/agent-scope-config.js";
 import {
   modelFallbackOverrideFromAvailability,
@@ -325,9 +326,19 @@ export async function prepareChatSendSession(params: {
     return { ok: false as const, error: missingHarnessSessionError };
   }
 
-  const deletedAgentId = resolveDeletedAgentIdFromSessionKey(cfg, sessionKey, entry, {
-    acpMetadataSessionKey: legacyKey ?? sessionKey,
+  // Explicit metadata, including misses, keeps this synchronous resolver off SQLite.
+  let deletedAgentId = resolveDeletedAgentIdFromSessionKey(cfg, sessionKey, entry, {
+    acpMeta: null,
   });
+  if (deletedAgentId !== null) {
+    const [acpMeta] = await readAcpSessionMetaForEntries({
+      cfg,
+      entries: [{ agentId: deletedAgentId, sessionKey: legacyKey ?? sessionKey, entry }],
+    });
+    deletedAgentId = resolveDeletedAgentIdFromSessionKey(cfg, sessionKey, entry, {
+      acpMeta: acpMeta ?? null,
+    });
+  }
   if (deletedAgentId !== null) {
     return {
       ok: false as const,

@@ -383,7 +383,8 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
           }
         : null,
       sessionId: target?.entry.sessionId?.trim() || null,
-      ...(!target && ["chat.send", "sessions.send", "sessions.create"].includes(params.method)
+      ...(!target &&
+      ["chat.send", "sessions.send", "sessions.create", "sessions.patch"].includes(params.method)
         ? {
             absentTarget: consumingSharing
               ? consumingSharing.storageTarget

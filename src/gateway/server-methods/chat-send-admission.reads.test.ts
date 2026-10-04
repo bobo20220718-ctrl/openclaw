@@ -5,6 +5,7 @@ import {
   observeHostDataSql,
   observeSqliteReadSql,
 } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import { seedCanonicalAcpSessionMeta } from "../../acp/runtime/session-meta-fixture.test-support.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import * as sessionAccessor from "../../config/sessions/session-accessor.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.sqlite-entry.js";
@@ -27,6 +28,28 @@ import { admitChatSend } from "./chat-send-admission.js";
 import { runChatSendPreAdmission } from "./chat-send-pre-admission.js";
 import { normalizeChatSendRequest } from "./chat-send-request.js";
 import { prepareChatSendSession, qualifyChatSendSession } from "./chat-send-session.js";
+
+async function withServingMetadata(cfg: OpenClawConfig, run: () => Promise<void>) {
+  const scheduler = createTestGatewayScheduler();
+  const metadataOwner = retainGatewayPluginMetadata(scheduler);
+  let profiles: Awaited<ReturnType<typeof prepareUserProfileCatalog>> | undefined;
+  try {
+    // Gateway bootstrap publishes metadata; session projection retains profile facts.
+    // Neither startup owner may admit the request's agent database.
+    const metadata = await metadataOwner.runBootstrap(() =>
+      resolvePluginMetadataSnapshotAsync({ config: cfg, allowCurrent: false }),
+    );
+    metadataOwner.publish(metadata);
+    setGatewayPluginMetadataSnapshot(metadata, { config: cfg });
+    profiles = await prepareUserProfileCatalog();
+    await run();
+  } finally {
+    profiles?.release();
+    await metadataOwner.beginClose();
+    await scheduler.stop();
+    expect((await metadataOwner.close()).failures).toEqual([]);
+  }
+}
 
 it.each(["absent", "admitted"] as const)(
   "prepares and authorizes a first chat turn without caller-thread SQL with an %s agent store",
@@ -55,18 +78,7 @@ it.each(["absent", "admitted"] as const)(
       if (!request.ok) {
         throw new Error(request.error);
       }
-      const scheduler = createTestGatewayScheduler();
-      const metadataOwner = retainGatewayPluginMetadata(scheduler);
-      let profiles: Awaited<ReturnType<typeof prepareUserProfileCatalog>> | undefined;
-      try {
-        // Gateway bootstrap publishes metadata; session projection retains profile facts.
-        // Neither startup owner may admit this first turn's agent database.
-        const metadata = await metadataOwner.runBootstrap(() =>
-          resolvePluginMetadataSnapshotAsync({ config: cfg, allowCurrent: false }),
-        );
-        metadataOwner.publish(metadata);
-        setGatewayPluginMetadataSnapshot(metadata, { config: cfg });
-        profiles = await prepareUserProfileCatalog();
+      await withServingMetadata(cfg, async () => {
         expect(existsSync(resolveOpenClawAgentSqlitePath({ agentId: "main" }))).toBe(
           store === "admitted",
         );
@@ -106,15 +118,86 @@ it.each(["absent", "admitted"] as const)(
         } finally {
           sql.restore();
         }
-      } finally {
-        profiles?.release();
-        await metadataOwner.beginClose();
-        await scheduler.stop();
-        expect((await metadataOwner.close()).failures).toEqual([]);
-      }
+      });
     });
   },
 );
+
+it.each([
+  {
+    name: "canonical free ACP",
+    sessionKey: "agent:external-harness:acp:canonical",
+    withMetadata: true,
+  },
+  {
+    name: "unconfirmed free ACP",
+    sessionKey: "agent:external-harness:acp:unconfirmed",
+    withMetadata: false,
+  },
+  {
+    name: "deleted ordinary owner",
+    sessionKey: "agent:external-harness:dashboard:deleted",
+    withMetadata: false,
+  },
+])("prepares $name without caller-thread SQL", async ({ name, sessionKey, withMetadata }) => {
+  await withOpenClawTestState({ label: "chat-unconfigured-owner" }, async () => {
+    const cfg = {
+      agents: { ownership: "explicit", entries: { main: {} } },
+    } satisfies OpenClawConfig;
+    setRuntimeConfigSnapshot(cfg, cfg);
+    const agentId = "external-harness";
+    const entry: SessionEntry = {
+      sessionId: "unconfigured-owner-session",
+      lifecycleRevision: "unconfigured-owner-lifecycle",
+      updatedAt: 1,
+    };
+    replaceSessionEntrySync({ agentId, sessionKey }, entry);
+    if (withMetadata) {
+      seedCanonicalAcpSessionMeta({
+        agentId,
+        sessionKey,
+        lifecycleRevision: entry.lifecycleRevision,
+        meta: {
+          backend: "acpx",
+          agent: agentId,
+          runtimeSessionName: sessionKey,
+          mode: "persistent",
+          state: "idle",
+          lastActivityAt: 1,
+        },
+      });
+    }
+    const request = normalizeChatSendRequest({
+      client: null,
+      params: { sessionKey, message: "Continue this session.", idempotencyKey: name },
+    });
+    if (!request.ok) {
+      throw new Error(request.error);
+    }
+    await withServingMetadata(cfg, async () => {
+      const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
+      const sql = observeHostDataSql();
+      try {
+        const prepared = await prepareChatSendSession({
+          request: request.value,
+          client: null,
+          context,
+        });
+        expect(prepared).toMatchObject(
+          withMetadata
+            ? { ok: true, value: { agentId, sessionKey, entry } }
+            : {
+                ok: false,
+                error: 'Agent "external-harness" no longer exists in configuration',
+              },
+        );
+        expect(sql.queries, sql.queries.join("\n")).toHaveLength(0);
+      } finally {
+        sql.restore();
+      }
+    });
+  });
+});
 
 it("uses fresh worker-prepared admission settings without host metadata reads", async () => {
   await withOpenClawTestState({ label: "chat-admission-read-count" }, async () => {

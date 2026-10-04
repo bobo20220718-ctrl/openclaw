@@ -60,7 +60,6 @@ describe("chat-model-select-state service tiers", () => {
         [],
         [{ ...model, supportsFastMode: false }],
         [{ ...model, serviceTiers: undefined }],
-        [{ ...model, serviceTiers: ["priority"] }],
         [{ ...model, available: undefined }],
         [{ ...model, available: false }],
         [{ ...model, id: "another-model" }],
@@ -160,27 +159,59 @@ it("uses Standard for a model's authoritative Standard-only capability without c
   }
 });
 
-it("downgrades saved Ultrafast only when a known model restriction also applies to the request", () => {
-  const state = resolveFastModeSelection({
-    sessionsResult: null,
-    currentModelOverride: "openai/fast-only",
-    fastModeTarget: { model: "fast-only", modelProvider: "openai", fastMode: "ultrafast" },
-    catalog: [
-      {
-        id: "fast-only",
-        name: "Fast model",
-        provider: "openai",
-        available: true,
-        supportsFastMode: true,
-        serviceTiers: ["default", "priority"],
-      },
-    ],
-  });
-  expect(state).toMatchObject({
-    active: true,
-    currentOverride: "on",
-    label: "Fast",
-    disabled: false,
-    ultrafastSupported: false,
-  });
-});
+it.each([{ tiers: ["default", "priority"] }, { tiers: ["priority"] }])(
+  "downgrades saved Ultrafast when the selected route offers $tiers",
+  ({ tiers }) => {
+    const state = resolveFastModeSelection({
+      sessionsResult: null,
+      currentModelOverride: "openai/fast-only",
+      fastModeTarget: { model: "fast-only", modelProvider: "openai", fastMode: "ultrafast" },
+      catalog: [
+        {
+          id: "fast-only",
+          name: "Fast model",
+          provider: "openai",
+          available: true,
+          supportsFastMode: true,
+          serviceTiers: tiers,
+        },
+      ],
+    });
+    expect(state).toMatchObject({
+      active: true,
+      currentOverride: "on",
+      label: "Fast",
+      disabled: false,
+      ultrafastSupported: false,
+    });
+  },
+);
+
+it.each([{ tiers: ["default"] }, { tiers: [] }])(
+  "shows Standard after the selected account loses optional tiers: $tiers",
+  ({ tiers }) => {
+    const state = resolveFastModeSelection({
+      sessionsResult: null,
+      currentModelOverride: "openai/account-limited",
+      fastModeTarget: { model: "account-limited", modelProvider: "openai", fastMode: "ultrafast" },
+      catalog: [
+        {
+          id: "account-limited",
+          name: "Account-limited model",
+          provider: "openai",
+          available: true,
+          supportsFastMode: true,
+          serviceTiers: tiers,
+        },
+      ],
+    });
+    expect(state).toMatchObject({
+      active: false,
+      currentOverride: "off",
+      label: "Standard",
+      disabled: true,
+      supported: true,
+      ultrafastSupported: false,
+    });
+  },
+);

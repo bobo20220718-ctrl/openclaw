@@ -74,6 +74,7 @@ type OpenAIResponsesWebSocketStream = {
   reusedConnection: boolean;
   continuationStatus: ResponsesContinuationStatus | "socket_not_cached";
   inputReplay?: ResponsesInputReplay;
+  readonly hasActiveResponse: boolean;
   finish: (options?: { keep?: boolean }) => void;
 };
 

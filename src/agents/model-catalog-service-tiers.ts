@@ -17,10 +17,12 @@ export function resolveModelCatalogServiceTiers(params: {
 }): string[] | undefined {
   const { snapshot, entry, evaluation, runtimeId } = params;
   const route = evaluation.selectedRoute;
+  const credential = evaluation.selectedCredential;
   if (
     !params.isCurrent() ||
     evaluation.availability !== true ||
-    !evaluation.selectedProfileId ||
+    !credential ||
+    credential.source === "harness" ||
     !route ||
     !runtimeId
   ) {
@@ -30,13 +32,13 @@ export function resolveModelCatalogServiceTiers(params: {
   if (
     runtimeId === "openclaw" &&
     normalizeProviderId(entry.provider) === "openai" &&
-    evaluation.selectedAuthMode === "api_key" &&
+    credential.requirement === "api-key" &&
     route.authRequirement === "api-key" &&
     route.api === "openai-responses" &&
     supportsOpenAIResponsesFastMode({ provider: "openai", ...route })
   ) {
     const observed = params.accountCatalog?.readServiceTiers({
-      profileId: evaluation.selectedProfileId,
+      identityKey: credential.identityKey,
       modelId: entry.id,
       runtimeId,
       api: route.api,
@@ -47,6 +49,7 @@ export function resolveModelCatalogServiceTiers(params: {
       : [...observed];
   }
   if (
+    credential.source !== "profile" ||
     route.requestTransportOverrides === "present" ||
     snapshot.refreshFailed ||
     snapshot.pendingProviders?.some(
@@ -58,7 +61,7 @@ export function resolveModelCatalogServiceTiers(params: {
   const outcome = snapshot.providerOutcomes?.find(
     (candidate) =>
       normalizeProviderId(candidate.provider) === normalizeProviderId(entry.provider) &&
-      candidate.profileId === evaluation.selectedProfileId,
+      candidate.profileId === credential.profileId,
   );
   if (outcome?.status !== "ready") {
     return undefined;

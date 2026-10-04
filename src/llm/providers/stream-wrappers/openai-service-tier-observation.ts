@@ -1,6 +1,5 @@
 import { responsesServiceTierObserver } from "@openclaw/ai/internal/openai";
 import type { StreamFn } from "@openclaw/llm-core";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { supportsOpenAIResponsesFastMode } from "../openai-fast-mode.js";
 
@@ -17,20 +16,6 @@ export function createOpenAIServiceTierObservationWrapper(
       return underlying(model, context, options);
     }
     const observedOptions = { ...options };
-    const originalOnPayload = options?.onPayload;
-    observedOptions.onPayload = async (payload, target) => {
-      const replacement = await originalOnPayload?.(payload, target);
-      const request = replacement ?? payload;
-      const tiers = readServiceTiers?.(model);
-      if (tiers && isRecord(request)) {
-        if (request.service_tier === "ultrafast" && !tiers.includes("ultrafast")) {
-          request.service_tier = tiers.includes("priority") ? "priority" : "default";
-        } else if (request.service_tier === "priority" && !tiers.includes("priority")) {
-          request.service_tier = "default";
-        }
-      }
-      return replacement;
-    };
     const previous = options && responsesServiceTierObserver.get(options);
     responsesServiceTierObserver.set(observedOptions, (observation) => {
       previous?.(observation);

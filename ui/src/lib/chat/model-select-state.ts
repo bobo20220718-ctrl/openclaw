@@ -369,12 +369,11 @@ function resolveFastModeProvider(
 }
 
 function isChatStandardOnlySpeed(
-  entry: Pick<ModelRuntimeEntry, "supportsFastMode" | "serviceTiers"> | undefined,
+  entry: Pick<ModelRuntimeEntry, "serviceTiers"> | undefined,
 ): boolean {
   return (
-    entry?.supportsFastMode === false &&
-    entry.serviceTiers?.length === 1 &&
-    entry.serviceTiers[0] === "default"
+    entry?.serviceTiers !== undefined &&
+    !entry.serviceTiers.some((tier) => tier === "priority" || tier === "ultrafast")
   );
 }
 
@@ -435,7 +434,7 @@ export function resolveChatFastModeSelectState(
     selectedEntries.length > 0 &&
     selectedEntries.every(
       ({ runtime }) =>
-        runtime?.serviceTiers?.includes("default") && !runtime.serviceTiers.includes("ultrafast"),
+        runtime?.serviceTiers !== undefined && !runtime.serviceTiers.includes("ultrafast"),
     );
   const effectiveMode = standardOnly
     ? false

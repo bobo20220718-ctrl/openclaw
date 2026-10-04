@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
+import { withNoteOutput } from "../../packages/terminal-core/src/note-output.js";
 import { repairCanonicalSessionKeys } from "./doctor-session-canonical-keys.js";
 
 export const canonicalMemoryTestSupportModuleUrl = import.meta.url;
@@ -11,14 +12,18 @@ async function main(): Promise<void> {
   }
   process.env.OPENCLAW_STATE_DIR = stateDir;
   const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
-  const result = await repairCanonicalSessionKeys({
-    apply: mode === "apply",
-    cfg: {
-      agents: { entries: { main: {} } },
-      session: { store: storeTemplate },
-    },
-    env,
-  });
+  const result = await withNoteOutput(
+    () => process.stderr,
+    () =>
+      repairCanonicalSessionKeys({
+        apply: mode === "apply",
+        cfg: {
+          agents: { entries: { main: {} } },
+          session: { store: storeTemplate },
+        },
+        env,
+      }),
+  );
   // The 160 MiB proof covers repair and result serialization, not unrelated Node shutdown tasks.
   process.stdout.write(JSON.stringify(result), () => process.exit(0));
 }

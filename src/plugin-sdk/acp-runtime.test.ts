@@ -26,6 +26,9 @@ it("keeps released ACP metadata signatures independent of internal actor binding
     Parameters<typeof import("./acp-runtime.js").readAcpSessionEntryAsync>["length"]
   >().toEqualTypeOf<1>();
   expectTypeOf<
+    Parameters<AcpSessionManagerDeps["loadSessionEntryAsync"]>["length"]
+  >().toEqualTypeOf<1>();
+  expectTypeOf<
     Parameters<AcpSessionManagerDeps["upsertSessionMeta"]>["length"]
   >().toEqualTypeOf<1>();
 });

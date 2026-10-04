@@ -4,10 +4,10 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { IncognitoAcpSessionAccess } from "../acp/runtime/session-meta-incognito.types.js";
-import { readIncognitoAcpSessionEntry } from "../acp/runtime/session-meta-read.js";
+import { readAcpSessionEntryAsync } from "../acp/runtime/session-meta-read.js";
 import { readAcpSessionMetaForEntries } from "../acp/runtime/session-meta-readonly.js";
 import * as metadataReader from "../acp/runtime/session-meta-readonly.js";
-import { upsertAcpSessionMetaInIncognitoActor } from "../acp/runtime/session-meta-write.js";
+import { upsertAcpSessionMeta } from "../acp/runtime/session-meta-write.js";
 import type { IncognitoSessionAuthority } from "../config/sessions/session-incognito-contract.js";
 import type { SessionAcpMeta } from "../config/sessions/types.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -61,12 +61,12 @@ it("orders set, link and clear through both owners with zero caller-thread SQL",
     authority: boundAuthority,
     ...input
   }: Parameters<IncognitoAcpSessionAccess["readEntry"]>[0]) =>
-    (await readIncognitoAcpSessionEntry(input, { actor, authority: boundAuthority }))?.entry;
+    (await readAcpSessionEntryAsync(input, { actor, authority: boundAuthority }))?.entry;
   const upsertComposed = ({
     authority: boundAuthority,
     ...input
   }: Parameters<IncognitoAcpSessionAccess["upsertMeta"]>[0]) =>
-    upsertAcpSessionMetaInIncognitoActor(input, { actor, authority: boundAuthority });
+    upsertAcpSessionMeta(input, { actor, authority: boundAuthority });
   const sessionKey = key("sequence");
   const target = { authority, cfg, env, sessionKey };
   await actor.sessions.create(authority, {
@@ -156,11 +156,10 @@ it.each(["read", "write"] as const)(
     const updated = { ...meta, lastActivityAt: 300 };
     const pending =
       operation === "read"
-        ? readIncognitoAcpSessionEntry(input, { actor, authority }).then((value) => value?.acp)
-        : upsertAcpSessionMetaInIncognitoActor(
-            { ...input, mutate: () => updated },
-            { actor, authority },
-          ).then((value) => value?.acp);
+        ? readAcpSessionEntryAsync(input, { actor, authority }).then((value) => value?.acp)
+        : upsertAcpSessionMeta({ ...input, mutate: () => updated }, { actor, authority }).then(
+            (value) => value?.acp,
+          );
     requestEnv.OPENCLAW_STATE_DIR = tempDirs.make("incognito-acp-redirect-");
     expect(await pending).toEqual(operation === "read" ? meta : updated);
     expect((await actor.acp.readEntry({ authority, cfg, env, sessionKey }))?.acp).toEqual(

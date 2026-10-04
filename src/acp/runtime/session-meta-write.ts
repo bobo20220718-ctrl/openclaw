@@ -29,14 +29,11 @@ type AcpSessionMutationParams = Parameters<typeof upsertAcpSessionMetaNative>[0]
 /** File-backed writes retain their read source through both canonical storage owners. */
 export async function upsertAcpSessionMeta(
   params: AcpSessionMutationParams,
+  incognito?: { actor: IncognitoAgentDatabaseExecution; authority: IncognitoSessionAuthority },
 ): Promise<SessionEntry | null> {
-  return mutateAcpSessionMeta(params);
-}
-
-export async function upsertAcpSessionMetaInIncognitoActor(
-  params: AcpSessionMutationParams,
-  incognito: { actor: IncognitoAgentDatabaseExecution; authority: IncognitoSessionAuthority },
-): Promise<SessionEntry | null> {
+  if (!incognito) {
+    return mutateAcpSessionMeta(params);
+  }
   const { actor, authority } = incognito;
   actor.assertCurrent();
   authority.assertCurrent();

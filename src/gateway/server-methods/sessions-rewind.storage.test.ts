@@ -802,7 +802,6 @@ describe.each(["sessionMutationCommitGuard", "sessionMutationAuthorization"] as 
           const scope = await seedMessageCutSource();
           await waitForSessionTranscriptIndexReconcile({ agentId: scope.agentId });
           const before = await readMutationStorage(scope);
-          const database = openOpenClawAgentDatabase({ agentId: scope.agentId });
           const denied = new SessionMutationAuthorizationChangedError(
             errorShape(ErrorCodes.FORBIDDEN, "admitted mutation authority was revoked"),
           );
@@ -811,7 +810,7 @@ describe.each(["sessionMutationCommitGuard", "sessionMutationAuthorization"] as 
           let rejectedAtWriteEdge = false;
           const assertCurrent = () => {
             if (!current) {
-              rejectedAtWriteEdge ||= database.db.isTransaction || workerCommitGrant;
+              rejectedAtWriteEdge ||= workerCommitGrant;
               throw denied;
             }
           };
@@ -824,34 +823,23 @@ describe.each(["sessionMutationCommitGuard", "sessionMutationAuthorization"] as 
                     assertTargetCurrent: vi.fn(),
                   },
                 };
-          let mutation: ReturnType<typeof invokeMessageCut>;
-          if (method === "sessions.fork") {
-            mutation = await revokeDuringWriterWait(
-              scope,
-              () => invokeMessageCut(method, scope, guards),
-              () => {
-                current = false;
-              },
-            );
-          } else {
-            const create = workerAdmission.createSqliteWorkerOperationAdmission;
-            vi.spyOn(workerAdmission, "createSqliteWorkerOperationAdmission").mockImplementation(
-              (callback, attachment) =>
-                create((request, grant) => {
-                  workerCommitGrant = request.stage === "commit";
-                  if (workerCommitGrant) {
-                    current = false;
-                  }
-                  try {
-                    callback(request, grant);
-                  } finally {
-                    workerCommitGrant = false;
-                  }
-                }, attachment),
-            );
-            mutation = invokeMessageCut(method, scope, guards);
-            await mutation.error;
-          }
+          const create = workerAdmission.createSqliteWorkerOperationAdmission;
+          vi.spyOn(workerAdmission, "createSqliteWorkerOperationAdmission").mockImplementation(
+            (callback, attachment) =>
+              create((request, grant) => {
+                workerCommitGrant = request.stage === "commit";
+                if (workerCommitGrant) {
+                  current = false;
+                }
+                try {
+                  callback(request, grant);
+                } finally {
+                  workerCommitGrant = false;
+                }
+              }, attachment),
+          );
+          const mutation = invokeMessageCut(method, scope, guards);
+          await mutation.error;
 
           expect.soft(await readMutationStorage(scope)).toEqual(before);
           expect.soft(rejectedAtWriteEdge).toBe(true);

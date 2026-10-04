@@ -67,9 +67,9 @@ describe("chat-model-select-state service tiers", () => {
         [{ ...model, agentRuntime: { id: otherRuntimeId, source: "model" as const } }],
       ]) {
         expect(resolveFastModeSelection({ ...input, catalog })).toMatchObject({
-          ultrafastSupported: false,
+          ultrafastSupported: undefined,
           currentOverride: "ultrafast",
-          label: "Fast",
+          label: "Ultrafast",
         });
       }
       // Runtime alternatives are complete projections, not overlays on the base route.
@@ -94,7 +94,7 @@ describe("chat-model-select-state service tiers", () => {
             agentRuntime: { id: otherRuntimeId, source: "session" },
           },
         }),
-      ).toMatchObject({ ultrafastSupported: false, label: "Fast" });
+      ).toMatchObject({ ultrafastSupported: undefined, label: "Ultrafast" });
       expect(
         resolveFastModeSelection({
           ...input,
@@ -120,4 +120,67 @@ describe("chat-model-select-state service tiers", () => {
       ).toMatchObject({ ultrafastSupported: true, label: "Ultrafast" });
     },
   );
+});
+
+it("uses Standard for a model's authoritative Standard-only capability without confusing configured tiers", () => {
+  for (const fastMode of [true, "auto", "ultrafast", undefined] as const) {
+    const input = {
+      sessionsResult: createSessionsListResult({ model: "standard-only", modelProvider: "openai" }),
+      currentModelOverride: "openai/standard-only",
+      fastModeTarget: { model: "standard-only", modelProvider: "openai", fastMode },
+      catalog: [
+        {
+          id: "standard-only",
+          name: "Standard model",
+          provider: "openai",
+          available: true,
+          supportsFastMode: false,
+          serviceTiers: ["default"],
+        },
+      ],
+    };
+    expect(resolveFastModeSelection(input)).toMatchObject({
+      active: false,
+      currentOverride: "off",
+      label: "Standard",
+      disabled: true,
+      supported: true,
+      ultrafastSupported: false,
+    });
+    expect(
+      resolveFastModeSelection({
+        ...input,
+        catalog: input.catalog.map((entry) =>
+          Object.assign({}, entry, {
+            serviceTiers: ["priority", "ultrafast"],
+          }),
+        ),
+      }),
+    ).toMatchObject({ disabled: !fastMode });
+  }
+});
+
+it("downgrades saved Ultrafast only when a known model restriction also applies to the request", () => {
+  const state = resolveFastModeSelection({
+    sessionsResult: null,
+    currentModelOverride: "openai/fast-only",
+    fastModeTarget: { model: "fast-only", modelProvider: "openai", fastMode: "ultrafast" },
+    catalog: [
+      {
+        id: "fast-only",
+        name: "Fast model",
+        provider: "openai",
+        available: true,
+        supportsFastMode: true,
+        serviceTiers: ["default", "priority"],
+      },
+    ],
+  });
+  expect(state).toMatchObject({
+    active: true,
+    currentOverride: "on",
+    label: "Fast",
+    disabled: false,
+    ultrafastSupported: false,
+  });
 });

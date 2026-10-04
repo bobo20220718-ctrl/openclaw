@@ -32,6 +32,8 @@ import { writePreRegisteredChatAbort } from "./chat-abort-authorization.js";
 import {
   isRetryableUnadoptedChatClaim,
   resolveRestartSafeChatAdmission,
+  withRestartSafeChatPlacement,
+  type PreparedRestartSafeChatPlacement,
 } from "./chat-restart-recovery.js";
 import { assertExpectedLeafActive } from "./chat-send-active-leaf.js";
 import {
@@ -184,7 +186,19 @@ export async function admitChatSend(
   let reservationSuperseded = false;
   let supersedingResult: DedupeEntry | undefined;
   let preparedGoalEntry: Awaited<ReturnType<typeof prepareChatSendSessionEntry>> | undefined;
-  const commitChatWorkAdmission = async (acpMeta: SessionEntry["acp"] | null): Promise<void> => {
+  const placementService = context.workerSessionPlacementService;
+  const commitChatWorkAdmission = async (
+    acpMeta: SessionEntry["acp"] | null,
+    preparedPlacement?: PreparedRestartSafeChatPlacement,
+  ): Promise<void> => {
+    if (context.workerSessionPlacementService !== placementService) {
+      throw new Error("Worker placement owner changed during chat admission; retry.");
+    }
+    if (placementService && preparedPlacement?.sessionId !== admittedSessionId) {
+      return withRestartSafeChatPlacement(placementService, admittedSessionId, (prepared) =>
+        commitChatWorkAdmission(acpMeta, prepared),
+      );
+    }
     if (
       request.goalOperation?.action === "start" &&
       !entry &&
@@ -198,6 +212,7 @@ export async function admitChatSend(
         getRuntimeConfig: context.getRuntimeConfig,
       });
     }
+    let refreshPlacement = false;
     await withCurrentChatSendRetry(params, pendingAttemptId, (latestSession, comparison) => {
       retryComparison = comparison;
       params.assertCurrent?.();
@@ -314,6 +329,16 @@ export async function admitChatSend(
         assertInitialSkillSelection = prepared.assertSkillSelection;
         admittedSessionId = initialSessionEntry.sessionId;
       }
+      if (context.workerSessionPlacementService !== placementService) {
+        throw new Error("Worker placement owner changed during chat admission; retry.");
+      }
+      if (placementService && preparedPlacement?.sessionId !== admittedSessionId) {
+        // A fresh Goal can select a new incarnation. Release this synchronous
+        // reader before awaiting placement facts and rechecking admission.
+        refreshPlacement = true;
+        return;
+      }
+      preparedPlacement?.facts.assertCurrent();
       restartSafeAdmission = resolveRestartSafeChatAdmission({
         activeRunScopeKey,
         agentId,
@@ -324,6 +349,7 @@ export async function admitChatSend(
         initialSessionEntry,
         acpMeta,
         now: Date.now(),
+        placement: preparedPlacement?.facts.placement,
         request: restartSafeRequest,
         requestedSessionId,
         sessionId: admittedSessionId,
@@ -361,6 +387,9 @@ export async function admitChatSend(
         lifecycleGeneration,
       });
     });
+    if (refreshPlacement) {
+      return commitChatWorkAdmission(acpMeta);
+    }
   };
 
   let retainedRequestConflict: ReturnType<typeof resolveChatSendRequestConflict>;

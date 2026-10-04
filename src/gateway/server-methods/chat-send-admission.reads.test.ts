@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { StatementSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import {
   observeHostDataSql,
   observeSqliteReadSql,
@@ -11,6 +12,7 @@ import * as sessionAccessor from "../../config/sessions/session-accessor.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import { setGatewayPluginMetadataSnapshot } from "../../plugins/current-plugin-metadata-snapshot.js";
 import { retainGatewayPluginMetadata } from "../../plugins/plugin-metadata-lifecycle.js";
@@ -24,6 +26,7 @@ import { createDirectChatContext } from "../server-chat.agent-events.test-helper
 import { pendingChatSendDedupeKey } from "../server-shared.js";
 import { resolveSessionMutationAuthorizationAsync } from "../session-sharing-authorization-async.js";
 import { roleClient, rolePolicyConfig } from "../session-sharing.test-utils.js";
+import { createWorkerSessionPlacementStore } from "../worker-environments/placement-store.js";
 import { admitChatSend } from "./chat-send-admission.js";
 import { runChatSendPreAdmission } from "./chat-send-pre-admission.js";
 import { normalizeChatSendRequest } from "./chat-send-request.js";
@@ -485,3 +488,113 @@ it.each(["known-source", "new-terminal", "new-receipt"] as const)(
     });
   },
 );
+
+it.each([
+  "caller revocation",
+  "lifecycle rotation",
+  "placement publication",
+  "service replacement",
+  "unavailable reader",
+] as const)("refuses %s while preparing placement admission", async (change) => {
+  await withOpenClawTestState({ label: "chat-placement-admission" }, async () => {
+    const cfg = {
+      agents: { ownership: "explicit", entries: { main: {} } },
+    } satisfies OpenClawConfig;
+    setRuntimeConfigSnapshot(cfg, cfg);
+    const sessionKey = "agent:main:dashboard:placement-admission";
+    const runId = "chat-placement-admission";
+    const scope = { agentId: "main", sessionKey };
+    const entry: SessionEntry = { sessionId: "placement-session", updatedAt: 1 };
+    replaceSessionEntrySync(scope, entry);
+    const request = normalizeChatSendRequest({
+      client: null,
+      params: { sessionKey, message: "Hello", idempotencyKey: runId },
+    });
+    if (!request.ok) {
+      throw new Error(request.error);
+    }
+    const placements = createWorkerSessionPlacementStore();
+    const getMany = vi.fn(() => new Map());
+    const context = createDirectChatContext({
+      getRuntimeConfig: () => cfg,
+      workerSessionPlacementService: change === "unavailable reader" ? { getMany } : placements,
+    });
+    const prepared = await prepareChatSendSession({ request: request.value, client: null, context });
+    if (!prepared.ok) {
+      throw new Error("Session preparation failed");
+    }
+    const session = qualifyChatSendSession(prepared.value);
+    const initialEntry = structuredClone(sessionAccessor.loadSessionEntry(scope));
+    const observed = createDeferred();
+    const resume = createDeferred();
+    const preparePlacement = placements.prepareRuntimeRefresh.bind(placements);
+    const delayed = vi
+      .spyOn(placements, "prepareRuntimeRefresh")
+      .mockImplementationOnce(async (sessionId) => {
+        const facts = await preparePlacement(sessionId);
+        observed.resolve();
+        await resume.promise;
+        return facts;
+      });
+    const respond = vi.fn();
+    let callerCurrent = true;
+    let admitted: Awaited<ReturnType<typeof admitChatSend>> | undefined;
+    const pending = admitChatSend({
+      request: request.value,
+      session,
+      client: null,
+      context,
+      respond,
+      assertCurrent: () => {
+        if (!callerCurrent) {
+          throw new Error("Original chat caller revoked during placement preparation");
+        }
+      },
+    }).then((result) => (admitted = result));
+    try {
+      if (change !== "unavailable reader") {
+        await awaitGateBeforeSettlement(observed.promise, pending, "chat skipped placement facts");
+        if (change === "caller revocation") {
+          callerCurrent = false;
+        } else if (change === "lifecycle rotation") {
+          rotateAgentEventLifecycleGeneration();
+        } else if (change === "placement publication") {
+          await placements.startDispatch({ ...scope, sessionId: entry.sessionId });
+        } else {
+          context.workerSessionPlacementService = createWorkerSessionPlacementStore();
+        }
+        resume.resolve();
+      }
+      expect((await pending).ok).toBe(false);
+      expect(respond).toHaveBeenCalledOnce();
+      expect(context.chatAbortControllers.size).toBe(0);
+      expect(context.dedupe.has(pendingChatSendDedupeKey(runId))).toBe(false);
+      expect(sessionAccessor.loadSessionEntry(scope)).toEqual(initialEntry);
+      expect(
+        sessionLifecycle.getSessionWorkAdmissionRelease({
+          scope: session.storePath,
+          identities: [sessionKey, entry.sessionId],
+        }),
+      ).toBeUndefined();
+      if (change === "unavailable reader") {
+        expect(respond.mock.calls[0]?.[2]?.message).toContain(
+          "Worker placement admission reader is unavailable",
+        );
+        expect(getMany).not.toHaveBeenCalled();
+      } else if (change === "caller revocation") {
+        expect(respond.mock.calls[0]?.[2]?.message).toContain(
+          "Original chat caller revoked during placement preparation",
+        );
+      }
+    } finally {
+      resume.resolve();
+      await Promise.allSettled([pending]);
+      delayed.mockRestore();
+      if (admitted?.ok) {
+        admitted.value.cleanupAdmittedRun();
+      }
+      session.releaseSessionTarget();
+      clearAgentRunContext(runId);
+    }
+  });
+});

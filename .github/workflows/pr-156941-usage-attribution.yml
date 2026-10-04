@@ -1,0 +1,95 @@
+name: PR 156941 usage-close attribution
+run-name: PR 156941 usage-close attribution
+on:
+  push:
+    branches: [test/pr-156941-usage-attribution]
+permissions:
+  contents: read
+concurrency:
+  group: pr-156941-usage-attribution
+  cancel-in-progress: false
+jobs:
+  comparison:
+    if: github.ref == 'refs/heads/test/pr-156941-usage-attribution'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        revision: [baseline, candidate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      BASE_SHA: f28801628446a76a77fc856b01c87464fe7701a4
+      HEAD_SHA: b6452545abe2cd8340b19fc4c58452d35b1208eb
+      TESTED_MERGE_SHA: c080875f7c28adaa1621e4511d624749d02da173
+      REVISION: ${{ matrix.revision }}
+    steps:
+      - name: Checkout the exact tested merge or its main parent
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.revision == 'candidate' && 'c080875f7c28adaa1621e4511d624749d02da173' || 'f28801628446a76a77fc856b01c87464fe7701a4' }}
+          fetch-depth: 2
+          persist-credentials: false
+          submodules: false
+      - name: Verify secretless pinned source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]
+          python3 - <<'PYCODE'
+          import json, os, pathlib, subprocess
+          names = ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN', 'NPM_TOKEN', 'NODE_AUTH_TOKEN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'GOOGLE_APPLICATION_CREDENTIALS', 'SSH_AUTH_SOCK')
+          assert not any(os.environ.get(name) for name in names), 'Unexpected task credential'
+          auth = subprocess.run(['git', 'config', '--get-regexp', r'http\..*extraheader'], capture_output=True)
+          assert auth.returncode == 1, 'Retained Git authentication'
+          selected = os.environ['TESTED_MERGE_SHA'] if os.environ['REVISION'] == 'candidate' else os.environ['BASE_SHA']
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == selected
+          if os.environ['REVISION'] == 'candidate':
+              parents = subprocess.check_output(['git', 'show', '-s', '--format=%P', 'HEAD'], text=True).split()
+              assert parents == [os.environ['BASE_SHA'], os.environ['HEAD_SHA']], 'Tested merge ancestry changed'
+          output = pathlib.Path(os.environ['RUNNER_TEMP'], 'usage-attribution')
+          output.mkdir()
+          (output / 'identity.json').write_text(json.dumps({'revision': os.environ['REVISION'], 'selected': selected, 'baseline': os.environ['BASE_SHA'], 'head': os.environ['HEAD_SHA'], 'testedMerge': os.environ['TESTED_MERGE_SHA'], 'sourceRun': 37183415335, 'sourceJob': 111380567055}, indent=2) + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write(f'COMPARISON_DIR={output}\n')
+          PYCODE
+      - name: Setup matching Node and pnpm
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.19.0"
+          install-bun: "false"
+          cache-mode: "off"
+          semantic-checks: "true"
+      - name: Repeat the complete file in its original test order
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json, os, pathlib, re, subprocess, time
+          output = pathlib.Path(os.environ['COMPARISON_DIR'])
+          target = 'src/gateway/server-methods/usage.sessions-usage-owner-attribution.integration.test.ts'
+          records = []
+          for attempt in range(1, 6):
+              started = time.monotonic()
+              env = dict(os.environ)
+              env['OPENCLAW_VITEST_FS_MODULE_CACHE_PATH'] = str(pathlib.Path(os.environ['RUNNER_TEMP'], f'usage-attribution-{attempt}-cache'))
+              log = output / f'run-{attempt}.log'
+              with log.open('w') as stream:
+                  result = subprocess.run(['node', 'scripts/run-vitest.mjs', target, '--maxWorkers=1', '--reporter=default'], env=env, stdout=stream, stderr=subprocess.STDOUT)
+              text = re.sub(r'\x1b\[[0-9;]*m', '', log.read_text())
+              collected = bool(re.search(r'Tests\s+\d+\s+(?:failed|passed)', text))
+              records.append({'attempt': attempt, 'exitCode': result.returncode, 'wallSeconds': round(time.monotonic()-started, 3), 'collected': collected, 'closeFenceObserved': 'Agent database resources are closing:' in text})
+              (output / 'comparison.json').write_text(json.dumps(records, indent=2) + '\n')
+              print(json.dumps(records[-1]), flush=True)
+              if not collected:
+                  raise SystemExit('No collected tests; setup failure is not attribution')
+          raise SystemExit(1 if any(record['exitCode'] != 0 for record in records) else 0)
+          PYCODE
+      - name: Upload exact comparison evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr-156941-usage-${{ matrix.revision }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/usage-attribution/
+          if-no-files-found: error
+          retention-days: 7

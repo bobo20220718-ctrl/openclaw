@@ -1,0 +1,161 @@
+name: PR 156941 restored-timeout attribution
+run-name: PR 156941 restored-timeout attribution
+on:
+  push:
+    branches: [test/pr-156941-restored-attribution]
+permissions:
+  contents: read
+concurrency:
+  group: pr-156941-restored-attribution
+  cancel-in-progress: false
+jobs:
+  comparison:
+    if: github.ref == 'refs/heads/test/pr-156941-restored-attribution'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        revision: [baseline, candidate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      BASE_SHA: bced15851945c3c460b48c03896701f9fa304536
+      HEAD_SHA: 58c25f9b877b2f209dd7e731517892d204999624
+      TESTED_MERGE_SHA: 7a0c73369243db0bb7dbf04cfa2b3c410d718d35
+      REVISION: ${{ matrix.revision }}
+    steps:
+      - name: Checkout the exact tested merge or its main parent
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.revision == 'candidate' && '7a0c73369243db0bb7dbf04cfa2b3c410d718d35' || 'bced15851945c3c460b48c03896701f9fa304536' }}
+          fetch-depth: 2
+          persist-credentials: false
+          submodules: false
+      - name: Verify secretless pinned source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]
+          python3 - <<'PYCODE'
+          import json, os, pathlib, subprocess
+          names = ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN', 'NPM_TOKEN', 'NODE_AUTH_TOKEN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'GOOGLE_APPLICATION_CREDENTIALS', 'SSH_AUTH_SOCK')
+          assert not any(os.environ.get(name) for name in names), 'Unexpected task credential'
+          auth = subprocess.run(['git', 'config', '--get-regexp', r'http\..*extraheader'], capture_output=True)
+          assert auth.returncode == 1, 'Retained Git authentication'
+          selected = os.environ['TESTED_MERGE_SHA'] if os.environ['REVISION'] == 'candidate' else os.environ['BASE_SHA']
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == selected
+          if os.environ['REVISION'] == 'candidate':
+              parents = subprocess.check_output(['git', 'show', '-s', '--format=%P', 'HEAD'], text=True).split()
+              assert parents == [os.environ['BASE_SHA'], os.environ['HEAD_SHA']], 'Tested merge ancestry changed'
+          output = pathlib.Path(os.environ['RUNNER_TEMP'], 'restored-attribution')
+          output.mkdir()
+          (output / 'identity.json').write_text(json.dumps({'revision': os.environ['REVISION'], 'selected': selected, 'baseline': os.environ['BASE_SHA'], 'head': os.environ['HEAD_SHA'], 'testedMerge': os.environ['TESTED_MERGE_SHA'], 'sourceRun': 37190706268, 'sourceJob': 111402352086}, indent=2) + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write(f'COMPARISON_DIR={output}\n')
+          PYCODE
+      - name: Retain bounded diagnostics only when the existing assertion fails
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import hashlib, os, pathlib, subprocess
+          target = pathlib.Path('test/gateway-restored-requester-settle.e2e.test.ts')
+          assert subprocess.check_output(['git', 'hash-object', str(target)], text=True).strip() == '3566129036e701428bf0732af729e93bfb1a5cf6', 'Original fixture changed'
+          before = """        await vi.waitFor(
+                    async () =>
+                      expect(await session()).toMatchObject({ status: expectedStatus, hasActiveRun: false }),
+                    { timeout: 20_000, interval: 50 },
+                  );"""
+          after = """        let observedSession: Awaited<ReturnType<typeof session>>;
+                  await vi.waitFor(
+                    async () => {
+                      observedSession = await session();
+                      expect(observedSession).toMatchObject({ status: expectedStatus, hasActiveRun: false });
+                    },
+                    { timeout: 20_000, interval: 50 },
+                  ).catch((error: unknown) => {
+                    throw gatewayDiagnosticError(instance, error, observedSession);
+                  });"""
+          source = target.read_text()
+          assert source.count(before) == 1, 'Status-wait diagnostic hunk changed'
+          source = source.replace(before, after, 1)
+          signature = 'function gatewayDiagnosticError(instance: OpenClawTestInstance, cause: unknown): Error {'
+          assert source.count(signature) == 1, 'Diagnostic helper changed'
+          source = source.replace(signature, 'function gatewayDiagnosticError(instance: OpenClawTestInstance, cause: unknown, observedSession?: unknown): Error {', 1)
+          observation = 'JSON.stringify({ readiness })'
+          assert source.count(observation) == 1, 'Diagnostic serialization changed'
+          source = source.replace(observation, 'JSON.stringify({ readiness, observedSession })', 1)
+          target.write_text(source)
+          patch = subprocess.check_output(['git', 'diff', '--no-ext-diff', '--', str(target)])
+          pathlib.Path(os.environ['COMPARISON_DIR'], 'diagnostic.patch').write_bytes(patch)
+          pathlib.Path(os.environ['COMPARISON_DIR'], 'diagnostic.sha256').write_text(hashlib.sha256(target.read_bytes()).hexdigest() + '\n')
+          PYCODE
+          git diff --check
+      - name: Setup matching Node and pnpm
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.19.0"
+          install-bun: "false"
+          cache-mode: "off"
+          semantic-checks: "true"
+      - name: Build the exact comparison source
+        env:
+          OPENCLAW_BUILD_PRIVATE_QA: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version | tee "$COMPARISON_DIR/node-version.txt"
+          /usr/bin/time -v -o "$COMPARISON_DIR/build.time.txt" pnpm build > "$COMPARISON_DIR/build.log" 2>&1
+      - name: Repeat the complete file in its original test order
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json, os, pathlib, re, subprocess, time
+          import xml.etree.ElementTree as ET
+          output = pathlib.Path(os.environ['COMPARISON_DIR'])
+          target = 'test/gateway-restored-requester-settle.e2e.test.ts'
+          records = []
+          for attempt in range(1, 6):
+              started = time.monotonic()
+              env = dict(os.environ)
+              env['OPENCLAW_VITEST_FS_MODULE_CACHE_PATH'] = str(pathlib.Path(os.environ['RUNNER_TEMP'], f'restored-attribution-{attempt}-cache'))
+              log = output / f'run-{attempt}.log'
+              report = output / f'run-{attempt}.xml'
+              with log.open('w') as stream:
+                  result = subprocess.run(['node', 'scripts/run-vitest.mjs', target, '--maxWorkers=1', '--reporter=default', '--reporter=junit', f'--outputFile={report}'], env=env, stdout=stream, stderr=subprocess.STDOUT)
+              text = re.sub(r'\x1b\[[0-9;]*m', '', log.read_text())
+              data = ET.parse(report).getroot() if report.is_file() else None
+              cases = list(data.iter('testcase')) if data is not None else []
+              required = ['normal runtime budget: final', 'normal runtime budget: runtime timeout', 'normal runtime budget: stop', 'runs at most two restored wakes']
+              collected = len(cases) == 4 and all(any(title in case.attrib.get('name', '') and case.find('skipped') is None for case in cases) for title in required)
+              clean_errors = data is not None and int(data.attrib.get('errors', 0)) == 0 and not data.findall('.//error')
+              clean_teardown = not re.search(r'error during close|close timed out after|Unhandled (?:Error|Rejection|Exception)', text)
+              records.append({'attempt': attempt, 'exitCode': result.returncode, 'wallSeconds': round(time.monotonic()-started, 3), 'collected': collected, 'cleanErrors': clean_errors, 'cleanTeardown': clean_teardown, 'failedCases': [case.attrib.get('name') for case in cases if case.find('failure') is not None]})
+              (output / 'comparison.json').write_text(json.dumps(records, indent=2) + '\n')
+              print(json.dumps(records[-1]), flush=True)
+              if not collected:
+                  raise SystemExit('No collected tests; setup failure is not attribution')
+          raise SystemExit(1 if any(record['exitCode'] != 0 or not record['cleanErrors'] or not record['cleanTeardown'] for record in records) else 0)
+          PYCODE
+      - name: Verify unchanged production and diagnostic overlay
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import hashlib, os, pathlib, subprocess
+          target = pathlib.Path('test/gateway-restored-requester-settle.e2e.test.ts')
+          changed = subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
+          assert changed == [str(target)], 'Unexpected source mutation'
+          expected = pathlib.Path(os.environ['COMPARISON_DIR'], 'diagnostic.sha256').read_text().strip()
+          assert hashlib.sha256(target.read_bytes()).hexdigest() == expected, 'Diagnostic fixture changed during execution'
+          PYCODE
+      - name: Upload exact comparison evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr-156941-restored-${{ matrix.revision }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/restored-attribution/
+          if-no-files-found: error
+          retention-days: 7
